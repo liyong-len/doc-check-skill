@@ -6312,9 +6312,9 @@ python scripts/evaluate.py --gold tests/gold/gold_set.json --predicted .doc-chec
     },
     {
       "file": "sample_company.docx",
-      "category": "数字与单位",
-      "quote": "本次费用 3000 元。",
-      "severity": "P1"
+      "category": "标点格式",
+      "quote": "本项目工期为 90 日历天,其余内容详见附件。",
+      "severity": "P2"
     }
   ]
 }
