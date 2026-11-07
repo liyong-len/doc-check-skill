@@ -84,6 +84,21 @@ def _collect_deviations(documents, keys, category, severity, min_ratio=0.6):
             actual = style.get(key)
             if actual == main_value:
                 continue
+            if main_value is None:
+                # 主流值是「未设置」时，说「主流值为未设置」没有可操作性：
+                # 多数段落本来就没写这一项，该改的是这一段。
+                description = (
+                    f"{_FIELD_LABELS.get(key, key)}多数段落未显式设置"
+                    f"（{main_count}/{total} 段），此处单独设为「{_fmt(actual)}」。"
+                )
+                suggestion = "删除此处的单独设置，或将其推广到全文。"
+            else:
+                description = (
+                    f"{_FIELD_LABELS.get(key, key)}与全文主流值不一致："
+                    f"本处为「{_fmt(actual)}」，主流值为「{_fmt(main_value)}」"
+                    f"（{main_count}/{total} 段）。"
+                )
+                suggestion = f"统一改为「{_fmt(main_value)}」。"
             issues.append(make_finding(
                 severity=severity,
                 category=category,
@@ -97,12 +112,8 @@ def _collect_deviations(documents, keys, category, severity, min_ratio=0.6):
                     "field": key,
                 },
                 quote=block.get("text", "")[:60],
-                description=(
-                    f"{_FIELD_LABELS.get(key, key)}与全文主流值不一致："
-                    f"本处为「{_fmt(actual)}」，主流值为「{_fmt(main_value)}」"
-                    f"（{main_count}/{total} 段）。"
-                ),
-                suggestion=f"统一改为「{_fmt(main_value)}」。",
+                description=description,
+                suggestion=suggestion,
             ))
     return issues
 
@@ -126,20 +137,36 @@ _HEADING_PATTERNS = [
 # 「见图 3 节」「（2）个标段」这类会被误判成题注或引用。
 _NOT_A_NUMBER_TAIL = r"(?!\s*[个条项处次段章节份件标页类])"
 
+# 题注写法按对象类型分组：图与表是两套独立的编号体系，
+# 「图3-1 流程图」与「表3-1 清单」是正确写法，不是混用。
+# 数字前有没有空格也算写法差异（「图1-1」与「图 1-1」）。
+# 写法清单里的空格是实打实的空格，不是排版占位。
 _CAPTION_PATTERNS = [
-    ("图N-N", re.compile(r"图\s*\d+[-－]\d+" + _NOT_A_NUMBER_TAIL)),
-    ("图N.N", re.compile(r"图\s*\d+\.\d+")),
-    ("图N", re.compile(r"图\s*\d+" + _NOT_A_NUMBER_TAIL)),
-    ("表N-N", re.compile(r"表\s*\d+[-－]\d+" + _NOT_A_NUMBER_TAIL)),
-    ("表N.N", re.compile(r"表\s*\d+\.\d+")),
-    ("表N", re.compile(r"表\s*\d+" + _NOT_A_NUMBER_TAIL)),
+    ("图 N-N", re.compile(r"图\s+\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "图"),
+    ("图N-N", re.compile(r"图\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "图"),
+    ("图 N.N", re.compile(r"图\s+\d+\.\d+"), "图"),
+    ("图N.N", re.compile(r"图\d+\.\d+"), "图"),
+    ("图 N", re.compile(r"图\s+\d+" + _NOT_A_NUMBER_TAIL), "图"),
+    ("图N", re.compile(r"图\d+" + _NOT_A_NUMBER_TAIL), "图"),
+    ("表 N-N", re.compile(r"表\s+\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "表"),
+    ("表N-N", re.compile(r"表\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "表"),
+    ("表 N.N", re.compile(r"表\s+\d+\.\d+"), "表"),
+    ("表N.N", re.compile(r"表\d+\.\d+"), "表"),
+    ("表 N", re.compile(r"表\s+\d+" + _NOT_A_NUMBER_TAIL), "表"),
+    ("表N", re.compile(r"表\d+" + _NOT_A_NUMBER_TAIL), "表"),
 ]
 
 # 引用标记写法。序号限三位数，避免把年份「（2024）」当引用。
+#
+# 「（n）」在中文文档里最常见的是枚举序号（「（1）」「（2）」），
+# 不是引用标记。因此这种写法要求前面有引用引导词
+# （参考文献/文献/见/据…），否则不参与写法混用的判定。
+_CITATION_CONTEXT = r"(?:参考文献|文献|见|据|参见|引自|依据|如表)"
 _CITATION_PATTERNS = [
-    ("文献[n]", re.compile(r"文献\[\d+\]")),
-    ("[n]", re.compile(r"\[\d+(?:[-–—,，]\d+)*\]")),
-    ("（n）", re.compile(r"[（(]\d{1,3}[）)]" + _NOT_A_NUMBER_TAIL)),
+    ("文献[n]", re.compile(r"文献\[\d+\]"), "引用"),
+    ("[n]", re.compile(r"\[\d+(?:[-–—,，]\d+)*\]"), "引用"),
+    ("（n）", re.compile(
+        _CITATION_CONTEXT + r"\s*[（(]\d{1,3}[）)]" + _NOT_A_NUMBER_TAIL), "引用"),
 ]
 
 _DATE_PATTERNS = [
@@ -152,11 +179,30 @@ _DATE_PATTERNS = [
 _CURRENCY_RE = re.compile(r"\d[\d,，.]*\s*(万元|元)")
 
 
-def _text_blocks(documents):
+def _text_blocks(documents, include_tables=False):
+    """文档里的正文块。
+
+    include_tables 为真时，表格单元格也作为文本块给出——
+    主体名与缩写常常只出现在表格里（名单表、术语表），
+    只看段落会让确定性层与模型层对「文档里有哪些主体」各说各话。
+    """
     for doc in documents:
         for b in doc.get("blocks", []):
-            if b.get("kind") == "paragraph" and b.get("text"):
-                yield doc, b
+            kind = b.get("kind")
+            if kind == "paragraph":
+                if b.get("text"):
+                    yield doc, b
+            elif kind == "table" and include_tables:
+                for row in b.get("rows") or []:
+                    for cell in row:
+                        text = cell.get("text") or ""
+                        if text.strip():
+                            yield doc, {
+                                "kind": "table_cell",
+                                "text": text,
+                                "index": b.get("index", 0),
+                                "section_path": b.get("section_path", ""),
+                            }
 
 
 def _classify(text, patterns):
@@ -168,6 +214,19 @@ def _classify(text, patterns):
     return None
 
 
+def _classify_group(text, patterns):
+    """返回 (体系名, 对象类型)。对象类型用于分组比较。
+
+    图与表是两套独立的编号体系，写法只在同一类型内部比较。
+    """
+    for item in patterns:
+        label, rx = item[0], item[1]
+        group = item[2] if len(item) > 2 else ""
+        if rx.search(text.strip()):
+            return label, group
+    return None, ""
+
+
 def _classify_depth(text, patterns):
     """返回 (体系名, 隐含层级)。patterns 元素为 (label, regex, depth)。"""
     for label, rx, depth in patterns:
@@ -176,34 +235,43 @@ def _classify_depth(text, patterns):
     return None, None
 
 
-def _mixed_style_issue(documents, category, patterns, severity, sample=3, prefix=""):
-    """若同一文件内出现两种以上写法，报告一次文件级问题。"""
+def _mixed_style_issue(documents, category, patterns, severity, sample=3, prefixes=None):
+    """若同一文件内同一类对象出现两种以上写法，报告一次文件级问题。
+
+    写法只在同一对象类型内部比较：图与表各是一套编号体系，
+    「图3-1」与「表3-1」并存是正确写法，不是混用。
+    """
     issues = []
     for doc in documents:
-        seen: dict[str, list[str]] = {}
+        seen: dict[str, dict[str, list[str]]] = {}
         for _, b in _text_blocks([doc]):
-            label = _classify(b["text"], patterns)
+            label, group = _classify_group(b["text"], patterns)
             if label:
-                seen.setdefault(label, []).append(b["text"].strip()[:40])
-        if len(seen) < 2:
-            continue
-        labels = sorted(seen)
-        sample_texts = [t for v in seen.values() for t in v][:sample]
-        issues.append(make_finding(
-            severity=severity,
-            category=category,
-            detector="deterministic",
-            confidence="确定",
-            file=doc["file"],
-            locator={"type": "file"},
-            quote=sample_texts[0] if sample_texts else "",
-            description=(
-                f"{prefix}在同一文件内出现 {len(labels)} 种写法："
-                + "、".join(labels)
-                + "。示例：" + "；".join(sample_texts)
-            ),
-            suggestion="统一为其中一种写法，全套文档保持一致。",
-        ))
+                seen.setdefault(group, {}).setdefault(label, []).append(
+                    b["text"].strip()[:40]
+                )
+        for group in sorted(seen):
+            labels_map = seen[group]
+            if len(labels_map) < 2:
+                continue
+            labels = sorted(labels_map)
+            sample_texts = [t for v in labels_map.values() for t in v][:sample]
+            prefix = (prefixes or {}).get(group, "")
+            issues.append(make_finding(
+                severity=severity,
+                category=category,
+                detector="deterministic",
+                confidence="确定",
+                file=doc["file"],
+                locator={"type": "file"},
+                quote=sample_texts[0] if sample_texts else "",
+                description=(
+                    f"{prefix}在同一文件内出现 {len(labels)} 种写法："
+                    + "、".join(labels)
+                    + "。示例：" + "；".join(sample_texts)
+                ),
+                suggestion="统一为其中一种写法，全套文档保持一致。",
+            ))
     return issues
 
 
@@ -312,12 +380,15 @@ def check_abbreviations(documents: list[dict]) -> list[dict]:
 
     「首次出现时应给出全称」——定义出现在首次出现之后的段落不算数。
     缩写本身放进 locator，避免同一段里两个缩写撞指纹。
+
+    表格也看：术语表（缩略语对照表）常在表格里，段落里看不到它，
+    就会把正文里的缩写误报成「未给出全称」。
     """
     issues = []
     for doc in documents:
         para_defs: list[set[str]] = []
         para_tokens: list[list[str]] = []
-        for _, b in _text_blocks([doc]):
+        for _, b in _text_blocks([doc], include_tables=True):
             text = b.get("text", "")
             para_defs.append({m.group(1) for m in _DEFINED_ABBR_RE.finditer(text)})
             para_tokens.append([
@@ -380,7 +451,7 @@ def check_heading_numbering(documents: list[dict]) -> list[dict]:
     return issues
 
 
-_FIG_NUM_RE = re.compile(r"[图表]\s*(\d+)[-－](\d+)")
+_FIG_NUM_RE = re.compile(r"(?P<kind>[图表])\s*(?P<chapter>\d+)[-－](?P<num>\d+)")
 
 
 def check_heading_level_jumps(documents: list[dict]) -> list[dict]:
@@ -415,14 +486,19 @@ def check_heading_level_jumps(documents: list[dict]) -> list[dict]:
 
 
 def check_figure_numbering_gaps(documents: list[dict]) -> list[dict]:
-    """图表题注体例：图表编号应连续，不应跳号。"""
+    """图表题注体例：图表编号应连续，不应跳号。
+
+    图与表各是一套独立的编号序列：第 3 章有「图3-1」与「表3-3」
+    是正常的，不能因为编号不同就报缺号。
+    """
     issues = []
     for doc in documents:
-        by_chapter: dict[str, list[int]] = {}
+        by_series: dict[tuple[str, str], list[int]] = {}
         for _, b in _text_blocks([doc]):
             for m in _FIG_NUM_RE.finditer(b.get("text", "")):
-                by_chapter.setdefault(m.group(1), []).append(int(m.group(2)))
-        for chapter, nums in sorted(by_chapter.items()):
+                key = (m.group("kind"), m.group("chapter"))
+                by_series.setdefault(key, []).append(int(m.group("num")))
+        for (kind, chapter), nums in sorted(by_series.items()):
             uniq = sorted(set(nums))
             if len(uniq) < 2:
                 continue
@@ -432,9 +508,9 @@ def check_figure_numbering_gaps(documents: list[dict]) -> list[dict]:
             issues.append(make_finding(
                 severity="P2", category="图表题注体例", detector="deterministic",
                 confidence="确定", file=doc["file"], locator={"type": "file"},
-                quote=f"图{chapter}-{uniq[0]}",
+                quote=f"{kind}{chapter}-{uniq[0]}",
                 description=(
-                    f"第 {chapter} 章的图表编号不连续，缺号："
+                    f"第 {chapter} 章的{kind}编号不连续，缺号："
                     + "、".join(str(n) for n in missing)
                     + f"（现有编号到 {uniq[-1]}）。"
                 ),
@@ -449,10 +525,12 @@ def check_conventions(documents: list[dict]) -> list[dict]:
     issues += check_heading_level_jumps(documents)
     issues += check_figure_numbering_gaps(documents)
     issues += _mixed_style_issue(
-        documents, "图表题注体例", _CAPTION_PATTERNS, "P2", prefix="图表题注写法"
+        documents, "图表题注体例", _CAPTION_PATTERNS, "P2",
+        prefixes={"图": "图题注写法", "表": "表题注写法"},
     )
     issues += _mixed_style_issue(
-        documents, "引用标记", _CITATION_PATTERNS, "P2", prefix="引用标记写法"
+        documents, "引用标记", _CITATION_PATTERNS, "P2",
+        prefixes={"引用": "引用标记写法"},
     )
     issues += check_tables(documents)
     issues += check_list_numbering(documents)
@@ -504,7 +582,7 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
 
     for doc in documents:
         found: list[str] = []
-        for _, b in _text_blocks([doc]):
+        for _, b in _text_blocks([doc], include_tables=True):
             found.extend(extract_company_names(b.get("text", "")))
         per_file[doc["file"]] = found
         for name in found:
@@ -542,22 +620,36 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
 
     for doc in documents:
         groups = group_variants(per_file[doc["file"]])
-        if len(groups) >= 2:
-            shown = [g["names"][0] for g in groups]
-            if _distinguished_by_header(doc, groups):
-                continue
-            issues.append(make_finding(
-                severity="P0", category="主体串写", detector="deterministic",
-                confidence="疑似 · 需人工核实", file=doc["file"],
-                locator={"type": "file"},
-                quote=shown[0],
-                description=(
-                    f"该文件出现 {len(groups)} 个不同主体："
-                    + "、".join(shown[:5])
-                    + "。文件名与章节标题中未出现这些主体名称，无法据此区分，疑似写混。"
-                ),
-                suggestion="确认每个名称的归属，删除与本文件主体无关的名称。",
-            ))
+        if len(groups) < 2:
+            continue
+        # 文件名与章节标题只能区分它们提到的主体。
+        # 一个名字被提到，不代表其余名字也被区分了——
+        # 文件名里的那个主体被区分了，文件里的另一个主体仍然没有依据。
+        explained = [g for g in groups if _named_in_header(doc, g)]
+        unexplained = [g for g in groups if not _named_in_header(doc, g)]
+        if not unexplained:
+            continue
+        shown = [g["names"][0] for g in unexplained]
+        if explained:
+            description = (
+                f"该文件出现 {len(groups)} 个不同主体，其中 {len(unexplained)} 个"
+                f"（{'、'.join(shown[:5])}）未在文件名或章节标题中出现，"
+                "无法据此区分归属，疑似写混。"
+            )
+        else:
+            description = (
+                f"该文件出现 {len(groups)} 个不同主体："
+                + "、".join(shown[:5])
+                + "。文件名与章节标题中未出现这些主体名称，无法据此区分，疑似写混。"
+            )
+        issues.append(make_finding(
+            severity="P0", category="主体串写", detector="deterministic",
+            confidence="疑似 · 需人工核实", file=doc["file"],
+            locator={"type": "file"},
+            quote=shown[0],
+            description=description,
+            suggestion="确认每个名称的归属，删除与本文件主体无关的名称。",
+        ))
 
     summary = {
         "names": [
@@ -580,21 +672,22 @@ def _first_file_for(names: dict, group_names: list[str]) -> str:
     return ""
 
 
-def _distinguished_by_header(doc: dict, groups: list[dict]) -> bool:
-    """文件名或章节标题中出现了某个主体名，说明这些主体是被显式区分的。
+def _named_in_header(doc: dict, group: dict) -> bool:
+    """这一组主体里，是否有名字出现在文件名或章节标题中。
 
     规范 §5.4：疑似混主体的前提是「未由文件名或章节标题显式区分」。
+    「区分」是对具体主体而言的：文件名提到甲，不等于文件里的乙
+    也被区分了。因此这一判定必须按组做，不能整份文件一刀切。
     """
     header = doc.get("file", "") + " " + " ".join(
         str(s.get("heading", "")) for s in doc.get("sections", [])
     )
-    for g in groups:
-        candidates = list(g.get("names", []))
-        if g.get("core"):
-            candidates.append(g["core"])
-        for name in candidates:
-            if name and name in header:
-                return True
+    candidates = list(group.get("names", []))
+    if group.get("core"):
+        candidates.append(group["core"])
+    for name in candidates:
+        if name and name in header:
+            return True
     return False
 
 

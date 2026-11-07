@@ -81,3 +81,18 @@ def test_deviations_in_same_paragraph_have_distinct_ids():
     ids = [i["id"] for i in result["issues"]]
     assert len(ids) == 2
     assert len(set(ids)) == 2
+
+
+def test_font_deviation_wording_when_most_paragraphs_set_nothing():
+    # 多数段落没有显式设置字体时，「主流值为未设置」没有可操作性，
+    # 要说清楚「多数段落未显式设置（14/15 段），此处单独设为……」
+    docs = [
+        _doc("a.docx", [
+            _para(f"正常段落{i}", _style(font_ea=None)) for i in range(4)
+        ] + [_para("异常字体段落", _style(font_ea="仿宋"))])
+    ]
+    result = analyze(docs)
+    issue = next(i for i in result["issues"] if i["category"] == "字体一致性")
+    assert "未显式设置" in issue["description"]
+    assert "仿宋" in issue["description"]
+    assert "主流值为「未设置」" not in issue["description"]

@@ -199,3 +199,79 @@ def test_two_abbreviations_in_one_paragraph_have_distinct_ids():
     issues = [i for i in result["issues"] if i["category"] == "术语与缩写"]
     assert len(issues) == 2
     assert len({i["id"] for i in issues}) == 2
+
+
+# --- 复查轮次：图表题注与引用标记的 Critical 缺陷 ---
+
+
+def test_figure_and_table_number_series_are_separate():
+    # 图与表各是一套编号序列：第 3 章有图3-1与表3-3是正常的，
+    # 合并成一个序列就会报出「缺号 2」这种假问题
+    docs = [_doc("a.docx", [
+        _p("见图3-1 示意图"),
+        _p("见表3-3 明细表"),
+    ])]
+    result = analyze(docs)
+    assert [i for i in result["issues"] if i["category"] == "图表题注体例"] == []
+
+
+def test_figure_and_table_caption_styles_are_not_mixed():
+    # 「图3-1 流程图」与「表3-1 清单」是正确写法，不是体例不一致
+    docs = [_doc("a.docx", [
+        _p("图3-1 流程图"),
+        _p("表3-1 清单"),
+    ])]
+    result = analyze(docs)
+    assert [i for i in result["issues"] if i["category"] == "图表题注体例"] == []
+
+
+def test_space_in_caption_is_a_distinct_writing():
+    # 规范 §5.3 的例子：「图1-1」与「图 1-1」是两种写法，要能查出来
+    docs = [_doc("a.docx", [
+        _p("图1-1 流程图"),
+        _p("图 1-1 架构图"),
+    ])]
+    result = analyze(docs)
+    issues = [i for i in result["issues"] if i["category"] == "图表题注体例"]
+    assert len(issues) == 1
+    assert "2 种写法" in issues[0]["description"]
+
+
+def test_chinese_enumeration_is_not_a_citation():
+    # 「（1）」「（2）」是中文枚举序号，不是引用标记。
+    # 与真的引用标记混在一起会报出「引用标记写法混用」这种假问题。
+    docs = [_doc("a.docx", [
+        _p("（1）投标文件应当包含资格证明文件。"),
+        _p("（2）投标文件应当包含技术方案。"),
+        _p("相关依据[1]说明本方案满足要求。"),
+    ])]
+    result = analyze(docs)
+    assert [i for i in result["issues"] if i["category"] == "引用标记"] == []
+
+
+def test_parenthesised_number_with_citation_context_is_a_citation():
+    # 有引用引导词时，「（n）」仍算引用标记写法
+    docs = [_doc("a.docx", [
+        _p("相关规定见（1）。"),
+        _p("相关依据[2]说明本方案满足要求。"),
+    ])]
+    result = analyze(docs)
+    issues = [i for i in result["issues"] if i["category"] == "引用标记"]
+    assert len(issues) == 1
+
+
+def test_abbreviation_defined_in_a_table_is_not_reported():
+    # 术语表常在表格里。只看段落就会把正文的 SLA 报成「未给出全称」
+    doc = _doc("a.docx", [
+        {"index": 0, "kind": "paragraph", "text": "本项目要求达到 SLA 水平。",
+         "style": None, "section_path": "第一章"},
+    ])
+    doc["blocks"].insert(0, {
+        "index": 0, "kind": "table", "text": "",
+        "rows": [[{"text": "缩略语", "style": {}},
+                  {"text": "全称", "style": {}}],
+                 [{"text": "服务水平（SLA）", "style": {}},
+                  {"text": "Service Level Agreement", "style": {}}]],
+    })
+    result = analyze([doc])
+    assert [i for i in result["issues"] if i["category"] == "术语与缩写"] == []
