@@ -1459,7 +1459,7 @@ _MIN_PREFIX_LEN = 4
 
 _NAME_RE = re.compile(
     r"(?P<pre>[一-龥A-Za-z0-9·]{2,30}?)"
-    r"(?P<suf>股份有限公司|有限责任公司|集团有限公司|有限公司|集团|研究院|研究所|设计院|事务所|工程中心|中心)"
+    r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
 
 
