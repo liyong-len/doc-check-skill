@@ -44,8 +44,12 @@ th { background: var(--soft); font-weight: 600; }
   padding: 10px 14px; margin: 10px 0; background: var(--soft); }
 .issue.P0 { border-left-color: var(--p0); } .issue.P1 { border-left-color: var(--p1); }
 .issue.P2 { border-left-color: var(--p2); } .issue.P3 { border-left-color: var(--p3); }
-.issue .quote { background: #fff8e1; border-left: 3px solid #f0c36d;
+.issue .quote { background: #fbfbfd; border-left: 3px solid #d7dbe2;
   padding: 6px 10px; margin: 8px 0; white-space: pre-wrap; }
+/* 问题片段高亮：引文本身是有问题的那一段，用 <mark> 把它标出来。
+   整块底色标不出片段——整块都是底色等于没标。 */
+.issue .quote mark { background: #ffe8a3; color: inherit; padding: 0 2px;
+  border-radius: 2px; }
 .issue .loc { color: var(--muted); font-size: 12px; }
 .issue .fix { color: #166534; }
 details { margin: 8px 0; }

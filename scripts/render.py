@@ -13,15 +13,36 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import read_json, write_json
+from common import fmt_value, force_utf8_stdio, read_json, write_json
+from labels import (
+    category_label,
+    confidence_label,
+    detector_label,
+    locator_type_label,
+)
 from report_style import CSS
-from schema import validate_findings
+from schema import derive_ids, validate_findings
 
 SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
+
+# last-findings.json 的格式版本。旧版本没有这个键，也没有确定性层的问题，
+# 与它对比时不能把今天跑出来的确定性问题说成「新增」。
+BASELINE_FORMAT_VERSION = 2
 
 
 def esc(v) -> str:
     return html.escape("" if v is None else str(v), quote=True)
+
+
+def _file_label(file_id: str) -> str:
+    """文件在报告里的显示名。
+
+    file 字段是文件标识，不只是文件名：不同目录下的两个 report.docx
+    会被分配成 a/report.docx 与 b/report.docx，靠它区分。
+    显示时原样给出——相对路径正是区分它们的依据，截成文件名就把
+    两份文档又混成了一份。
+    """
+    return str(file_id or "")
 
 
 def _locator_text(loc: dict) -> str:
@@ -37,7 +58,10 @@ def _locator_text(loc: dict) -> str:
         parts.append(f"表第 {loc['row']} 行")
     if "col" in loc:
         parts.append(f"第 {loc['col']} 列")
-    return " / ".join(parts) if parts else t
+    if parts:
+        return " / ".join(parts)
+    # 没有更细的位置时显示位置类型的中文名，不显示 file / paragraph 这类英文枚举
+    return locator_type_label(t)
 
 
 def _severity(f: dict) -> str:
@@ -66,14 +90,17 @@ def _issue_card(f: dict) -> str:
         # 缩写类 finding 的判别信息在 locator 里，quote 为空
         extra = f" · 缩写 {esc(loc['abbreviation'])}"
     quote = f.get("quote", "")
-    quote_html = f'<div class="quote">{esc(quote)}</div>' if quote else ""
+    # 引文就是有问题的那一段，用 <mark> 把它标出来（规范 §8.2 §3
+    # 「原文摘录并在问题片段处高亮」）。不能只靠 .quote 的底色，
+    # 那样整块都是底色，等于没有标出片段。
+    quote_html = f'<div class="quote"><mark>{esc(quote)}</mark></div>' if quote else ""
     return (
         f'<div class="issue {esc(sev)}">'
         f'<div><span class="badge {esc(sev)}">{esc(sev)}</span>'
-        f'<span class="tag">{esc(f.get("category", ""))}</span>'
-        f'<span class="tag">{esc(f.get("detector", ""))}</span>'
-        f'<span class="tag">{esc(f.get("confidence", ""))}</span></div>'
-        f'<div class="loc">{esc(f.get("file", ""))} · {esc(_locator_text(loc))}{extra}</div>'
+        f'<span class="tag">{esc(category_label(f.get("category")))}</span>'
+        f'<span class="tag">{esc(detector_label(f.get("detector")))}</span>'
+        f'<span class="tag">{esc(confidence_label(f.get("confidence")))}</span></div>'
+        f'<div class="loc">{esc(_file_label(f.get("file", "")))} · {esc(_locator_text(loc))}{extra}</div>'
         f'{quote_html}'
         f'<div>{esc(f.get("description", ""))}</div>'
         f'<div class="fix">建议：{esc(f.get("suggestion", ""))}</div>'
@@ -128,7 +155,7 @@ def _section_0(manifest: dict) -> str:
     for d in manifest.get("documents", []):
         st = d.get("stats", {})
         rows.append([
-            esc(d.get("file", "")),
+            esc(_file_label(d.get("file", ""))),
             esc(d.get("type", "")),
             esc(st.get("pages", 0)),
             esc(st.get("words", 0)),
@@ -147,7 +174,8 @@ def _section_0(manifest: dict) -> str:
         out.append("<h3>未能检查的文件</h3>")
         out.append(_table(
             ["文件", "原因"],
-            [[esc(f.get("file", "")), esc(f.get("reason", ""))] for f in fails],
+            [[esc(_file_label(f.get("file", ""))), esc(f.get("reason", ""))]
+             for f in fails],
         ))
     else:
         out.append("<p>全部文件均已完成检查。</p>")
@@ -166,7 +194,8 @@ def _section_1(consistency, findings, counts) -> str:
         )
     cats: dict[str, int] = {}
     for f in all_issues:
-        cats[f.get("category", "未分类")] = cats.get(f.get("category", "未分类"), 0) + 1
+        key = category_label(f.get("category"))
+        cats[key] = cats.get(key, 0) + 1
     cat_rows = [[esc(k), str(v)] for k, v in sorted(cats.items(), key=lambda kv: -kv[1])]
     file_counts: dict[str, int] = {}
     for f in all_issues:
@@ -215,7 +244,7 @@ def _section_2(consistency, findings) -> str:
         loc = _locator_text(f.get("locator", {}))
         rows.append([
             f'<span class="badge {esc(_severity(f))}">{esc(_severity(f))}</span>',
-            esc(f.get("file", "")),
+            esc(_file_label(f.get("file", ""))),
             esc(loc),
             esc(f.get("description", "")),
         ])
@@ -233,11 +262,14 @@ def _section_3(consistency, findings, manifest) -> str:
         return "".join(out)
     for fname in sorted(by_file):
         items = by_file[fname]
-        out.append(f"<details open><summary>{esc(fname)}（{len(items)} 个问题）</summary>")
+        out.append(
+            f"<details open><summary>{esc(_file_label(fname))}"
+            f"（{len(items)} 个问题）</summary>"
+        )
         out.append(_file_summary(manifest, fname))
         groups: dict[str, list[dict]] = {}
         for f in items:
-            groups.setdefault(f.get("category", "未分类"), []).append(f)
+            groups.setdefault(category_label(f.get("category")), []).append(f)
         for cat in sorted(groups):
             out.append(f"<h3>{esc(cat)}（{len(groups[cat])}）</h3>")
             for f in groups[cat]:
@@ -262,8 +294,9 @@ def _file_summary(manifest: dict, fname: str) -> str:
         f"规模：{st.get('words', 0)} 字 / {st.get('paragraphs', 0)} 段 / {st.get('tables', 0)} 表",
         f"结构：{st.get('tables', 0)} 表 / {st.get('rows', 0)} 行 / {st.get('sheets', 0)} 个工作表",
     ]
+    # 主体名来自文档内容，必须转义后输出
     names = doc.get("entities", [])
-    bits.append(f"主体名：{'、'.join(names) if names else '未识别'}")
+    bits.append("主体名：" + esc("、".join(names) if names else "未识别"))
     return f'<div class="muted">{"　｜　".join(bits)}</div>'
 
 
@@ -292,7 +325,9 @@ def _section_4(consistency: dict) -> str:
         for key, v in profile.items():
             rows.append([
                 esc(v.get("label", key)),
-                esc(v.get("dominant")),
+                # 主流值可能是 None（这一项多数段落没设置）。空单元格读起来
+                # 像坏掉的表格，写「未设置」才是事实。
+                esc(fmt_value(v.get("dominant"))),
                 esc(v.get("count", 0)),
                 esc(v.get("total", 0)),
             ])
@@ -305,8 +340,8 @@ def _section_4(consistency: dict) -> str:
     if style_issues:
         out.append(_table(
             ["文件", "位置", "项目", "原文摘录", "说明"],
-            [[esc(i.get("file", "")), esc(_locator_text(i.get("locator", {}))),
-              esc(i.get("category", "")), esc(i.get("quote", "")),
+            [[esc(_file_label(i.get("file", ""))), esc(_locator_text(i.get("locator", {}))),
+              esc(category_label(i.get("category"))), esc(i.get("quote", "")),
               esc(i.get("description", ""))] for i in style_issues],
         ))
     else:
@@ -317,7 +352,7 @@ def _section_4(consistency: dict) -> str:
     if conv_issues:
         out.append(_table(
             ["文件", "类别", "问题"],
-            [[esc(i.get("file", "")), esc(i.get("category", "")),
+            [[esc(_file_label(i.get("file", ""))), esc(category_label(i.get("category"))),
               esc(i.get("description", ""))] for i in conv_issues],
         ))
     else:
@@ -367,7 +402,7 @@ def _section_5(findings: list[dict], depth: str = "",
     if todo:
         out.append(_table(
             ["☐", "文件", "位置", "缺失内容", "为何需要", "建议"],
-            [["☐", esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+            [["☐", esc(_file_label(f.get("file", ""))), esc(_locator_text(f.get("locator", {}))),
               esc(f.get("quote", "")), esc(f.get("description", "")),
               esc(f.get("suggestion", ""))] for f in todo],
         ))
@@ -379,7 +414,7 @@ def _section_5(findings: list[dict], depth: str = "",
     if verify:
         out.append(_table(
             ["☐", "文件", "位置", "问题", "为何需要", "建议"],
-            [["☐", esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+            [["☐", esc(_file_label(f.get("file", ""))), esc(_locator_text(f.get("locator", {}))),
               esc(f.get("quote", "")), esc(f.get("description", "")),
               esc(f.get("suggestion", ""))] for f in verify],
         ))
@@ -407,6 +442,15 @@ def _section_6(baseline_diff: dict) -> str:
         return ""
     fd = baseline_diff.get("findings", {})
     out = ["<h2 id='s6'>§6 复查对比</h2>"]
+    if baseline_diff.get("baseline_old_format"):
+        # 旧格式的基线里没有确定性层的问题，它与今天的确定性层无从对比。
+        # 把今天跑出来的确定性问题说成「新增」是在这一章里说假话，
+        # 必须写明这一章只覆盖了语义层。
+        out.append(
+            "<div class='limit'>基线来自旧版本格式，确定性层问题无法对比。"
+            "下面的「新增 / 已修复 / 未修复」只覆盖语义层（findings）的问题，"
+            "确定性层的问题请看 §3 与 §4。</div>"
+        )
     rows = baseline_diff.get("files", [])
     modified = [r.get("file", "") for r in rows if _file_state(r) == "modified"]
     added = [r.get("file", "") for r in rows if _file_state(r) == "added"]
@@ -436,8 +480,8 @@ def _section_6(baseline_diff: dict) -> str:
             out.append(_table(
                 ["级别", "文件", "位置", "类别", "问题"],
                 [[f'<span class="badge {esc(_severity(f))}">{esc(_severity(f))}</span>',
-                  esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
-                  esc(f.get("category", "")), esc(f.get("description", ""))]
+                  esc(_file_label(f.get("file", ""))), esc(_locator_text(f.get("locator", {}))),
+                  esc(category_label(f.get("category"))), esc(f.get("description", ""))]
                  for f in items],
             ))
         else:
@@ -496,7 +540,7 @@ def _section_7(manifest: dict) -> str:
     out.append("<h3>文件指纹</h3>")
     out.append(_table(
         ["文件", "SHA256"],
-        [[esc(d.get("file", "")), esc(d.get("sha256", ""))]
+        [[esc(_file_label(d.get("file", ""))), esc(d.get("sha256", ""))]
          for d in manifest.get("documents", [])],
     ))
     return "".join(out)
@@ -582,6 +626,27 @@ def _read_dict_or_fail(path: Path, what: str, hint: str = "") -> dict:
     return data
 
 
+def _baseline_format_version(prev: dict) -> int:
+    """基线 JSON 的格式版本。没有这个键的就是旧格式（版本 0）。"""
+    try:
+        return int(prev.get("format_version", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _baseline_has_det_layer(prev: dict) -> bool:
+    """基线里有没有确定性层的问题。
+
+    确定性层的问题要能被对比，基线里必须带着它们。本版本写出的基线
+    带 format_version 标记，也带 issues 数组；早于这个标记的旧基线
+    只带 findings（有的连 issues 键都没有），拿它对比确定性层只会得到
+    「今天跑出来的确定性问题全是新增」——文档一个字没改也不该这么说。
+    """
+    if "issues" in prev:
+        return True
+    return _baseline_format_version(prev) >= BASELINE_FORMAT_VERSION
+
+
 def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
     work = Path(work)
     prepare_hint = "请先运行 scripts/prepare.py 生成工作目录。"
@@ -597,6 +662,9 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
         for e in errors:
             print(f"findings.json 校验失败：{e}", file=sys.stderr)
         raise SystemExit(2)
+    # id 是派生字段，渲染器自己算。合同（content-rules.md 的写作要求）
+    # 从没要求模型写它，缺 id 的 findings.json 不是错误。
+    findings = derive_ids(findings)
 
     baseline_diff = None
     if baseline is not None:
@@ -606,11 +674,20 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
         # 复查对比必须覆盖**两层**：模型写的 findings 与确定性层的 issues。
         # 只比模型侧，新出现的 P0 混主体会在 §2/§3 显示却不被计入 §6，
         # 等于在专门用来追踪变化的章节里说了假话。
+        old_format = not _baseline_has_det_layer(prev)
         current_all = list(findings) + _issue_list(consistency, "issues")
         prev_all = _issue_list(prev, "findings") + _issue_list(prev, "issues")
+        if old_format:
+            # 旧格式的基线里没有确定性层的问题（连 issues 键都没有）。
+            # 拿今天的确定性问题去和它比，只会得到「全部新增」——
+            # 文档一个字没改也说它新增了 7 个问题。
+            # 与其说假话，不如只比语义层，并在 §6 里写明这件事。
+            current_all = list(findings)
+            prev_all = _issue_list(prev, "findings")
         baseline_diff = {
             "findings": diff_findings(current_all, prev_all),
             "files": diff_manifests(manifest, prev.get("manifest") or {}),
+            "baseline_old_format": old_format,
         }
 
     html_text = build_html({
@@ -625,6 +702,7 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
     out.write_text(html_text, encoding="utf-8")
 
     write_json(work / "last-findings.json", {
+        "format_version": BASELINE_FORMAT_VERSION,
         "generated_at": manifest.get("generated_at", ""),
         "findings": findings,
         "issues": _issue_list(consistency, "issues"),
@@ -640,6 +718,7 @@ def main(argv=None) -> int:
     parser.add_argument("--baseline", default=None, help="上次运行的 last-findings.json")
     args = parser.parse_args(argv)
 
+    force_utf8_stdio()
     out = render(Path(args.work), Path(args.out),
                  Path(args.baseline) if args.baseline else None)
     print(f"报告已生成：{out.resolve()}")

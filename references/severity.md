@@ -48,7 +48,6 @@
 
 ```json
 {
-  "id": "ab12cd34ef567890",
   "severity": "P1",
   "category": "前后矛盾",
   "detector": "llm",
@@ -65,14 +64,14 @@
 
 | 字段 | 说明 |
 |---|---|
-| id | 由 file + category + locator + quote 哈希得到的 16 位指纹。同一问题在文档未改动时保持稳定，用于复查对比。 |
+| id | **可省略，不要自己编。** 这是派生字段：由 file + category + locator + quote 哈希得到的 16 位指纹，渲染器在读入 findings.json 时自己算并重算。同一问题在文档未改动时保持稳定，用于复查对比。 |
 | severity | P0 / P1 / P2 / P3 |
 | category | 问题类别。**只能取 content-rules.md 固定清单里的九个语义类别**（错别字用词、标点格式、前后矛盾、主体名误用、引用张冠李戴、待补充内容、数字逻辑、表述不清、术语一致性）。确定性层的十一个类别——字体一致性、段落格式一致性、标题层级体例、图表题注体例、表格体例、列表与编号、引用标记、数字与单位、主体名称、主体串写、术语与缩写——由脚本产出，**不要在 findings.json 里写** |
 | detector | deterministic 或 llm。模型写出的必须是 llm。 |
 | confidence | 确定 或 疑似 · 需人工核实 |
-| file | 文件名，与 docs.json 中的 file 字段一致 |
+| file | 文件标识，与 docs.json 中的 file 字段一致。同名文件在不同目录下时，file 是相对路径（如 `a/report.docx`），照抄原样即可，不要截成文件名 |
 | locator | 定位信息，type 取 paragraph / table / file / section |
-| quote | 原文摘录，尽量取完整的句子或短语，不要改写 |
+| quote | 原文摘录，尽量取完整的句子或短语，不要改写。**它就是有问题的那一段**，报告里会被高亮标出 |
 | description | 问题描述，说明为什么不妥 |
 | suggestion | 可直接执行的修改建议，不要写「建议优化」这类空话 |
 
@@ -82,3 +81,4 @@
 2. quote 必须是原文中确实存在的片段。
 3. locator.index 用 chunks.json 中 block_indexes 的首个下标。
 4. 同一问题只写一条，不要在不同类别下重复。
+5. id 不必写。渲染器按 file + category + locator + quote 自行计算，你写了也不作数。

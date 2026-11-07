@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from common import fmt_value as _fmt
 from entities import canonical_core, extract_company_names, group_variants
 from schema import make_finding
 
@@ -56,14 +57,6 @@ def dominant(documents, key: str) -> tuple[object, int, int]:
 
 def style_fingerprint(style: dict) -> tuple:
     return tuple(style.get(k) for k in _FONT_KEYS + _PARA_KEYS)
-
-
-def _fmt(value) -> str:
-    if value is None:
-        return "未设置"
-    if isinstance(value, float):
-        return f"{value:g}"
-    return str(value)
 
 
 def _collect_deviations(documents, keys, category, severity, min_ratio=0.6):

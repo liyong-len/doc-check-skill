@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,40 @@ def normalize_text(s: str) -> str:
     """NFKC 归一 + 空白折叠，用于文本比对。"""
     s = unicodedata.normalize("NFKC", s)
     return re.sub(r"\s+", " ", s).strip()
+
+
+def fmt_value(value) -> str:
+    """把样式取值格式化成报告里显示的文字。
+
+    None 是「这一项没设置」，不是「空字符串」：直接输出会得到一个空单元格，
+    读者以为表格坏了。统一显示为「未设置」。
+    """
+    if value is None:
+        return "未设置"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def force_utf8_stdio() -> None:
+    """把标准输出与标准错误切到 UTF-8。
+
+    Windows 上 sys.stdout.encoding 默认是系统码页（GBK），中文提示会按
+    GBK 写出去，读进程输出（而不是读 JSON 文件）的智能体拿到的是乱码，
+    整条流水线在这一步就断了。安装器里的内嵌 Python 已经这么做了，
+    这里补齐三处入口。
+
+    没有 reconfigure 的平台或被替换过的 stdout 对象直接跳过，
+    不能因为编码设置失败就让脚本崩掉。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 
 def normalize_name(s: str) -> str:

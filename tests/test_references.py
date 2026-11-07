@@ -171,3 +171,30 @@ def test_format_rules_limits_caption_gap_check_to_hyphenated_numbers():
     text = _read("format-rules.md")
     assert "不参与缺号检查" in text
     assert "图N.N" in text
+
+
+# --- 修复波 B1：合同要写清 id 是派生字段、file 是文件标识 ---
+
+
+def test_severity_doc_says_id_is_optional_and_derived():
+    # id 是渲染器自己算的指纹。合同里没写清楚，智能体就会因为漏写它
+    # 而把一整份 findings.json 交不出去
+    text = _read("severity.md")
+    assert "派生" in text
+    assert "可省略" in text or "不必写" in text
+    assert "渲染器" in text
+
+
+def test_content_rules_says_not_to_write_id():
+    text = _read("content-rules.md")
+    assert "id" in text
+    assert "派生" in text
+    assert "不要写" in text
+
+
+def test_reference_docs_explain_relative_file_identity():
+    # 同名文件在不同目录下时 file 是相对路径，智能体照抄即可
+    for name in ("severity.md", "content-rules.md"):
+        text = _read(name)
+        assert "report.docx" in text, name
+        assert "相对路径" in text, name

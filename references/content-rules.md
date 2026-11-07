@@ -65,5 +65,8 @@ consistency.json 里（键有 style_profile、issues、entities.per_file、stats
 - severity 与 confidence 的判定标准见 severity.md。凡是结论依赖文档外事实（企业是否真实存在、被引文献是否真实、法规是否现行有效）的，一律写「疑似 · 需人工核实」，不得写「确定」。
 - 合计与分项是否相符、单位换算是否正确，只能由你自己判断：阶段①不做算术校验，consistency.json 里也没有算术结论。
 - locator.type 取 paragraph，index 取该分片 block_indexes 的首个下标。
+- file 照抄该分片的 file 字段。同名文件在不同目录下时它是相对路径（如 `a/report.docx`），不要截成文件名——那样会把两份文档的问题混成一份。
+- **id 不要写。** 它是由 file + category + locator + quote 算出来的派生字段，渲染器自己会算；漏写 id 不是错误，不需要补一个占位值。
 - description 写清为什么不妥，suggestion 给出可直接执行的改法。
 - detector 写 llm。
+- quote 必须是原文中确实存在的片段，报告里被高亮标出的就是它。
