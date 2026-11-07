@@ -23,11 +23,33 @@ def test_connector_inside_company_name_is_not_trimmed():
     assert extract_company_names("北京和信科技有限公司") == ["北京和信科技有限公司"]
 
 
-def test_trim_picks_longest_qualifying_cut():
-    # 「由」切出 6 字、「和」只切出 3 字，取更长的那个
+def test_trim_skips_cut_that_leaves_too_little():
+    # 「由」切出 6 字、「和」只切出 3 字（不足 4 字），跳过「和」取「由」
     assert extract_company_names("本项目由北京和兴科技有限公司编制") == [
         "北京和兴科技有限公司"
     ]
+
+
+def test_trim_picks_last_qualifying_connector():
+    # 候选长度随连接词右移而变短，取最短合格切分 = 取最靠后的合格连接词，
+    # 这样句子碎片（甲方、乙方、委托）不会带进名字
+    assert extract_company_names("由甲方及乙方共同委托北京华信科技有限公司") == [
+        "北京华信科技有限公司"
+    ]
+
+
+def test_center_is_not_a_company_form():
+    # 「中心」是普通名词不是企业形式，技术中心不该被抽成企业名
+    assert extract_company_names("本项目技术中心负责实施") == []
+    assert extract_company_names("数据中心有限公司") == ["数据中心有限公司"]
+
+
+def test_form_fragment_guard_keeps_equal_length_names():
+    # 形式词的严格前缀才是片段，长度相等的是真实字号
+    assert extract_company_names("研究中心有限公司") == ["研究中心有限公司"]
+    assert extract_company_names("设计院有限公司") == ["设计院有限公司"]
+    # 「股份」是「股份有限公司」的严格前缀，是片段
+    assert extract_company_names("中信建设集团股份有限公司") == ["中信建设集团"]
 
 
 def test_extract_company_names_skips_split_form_word():

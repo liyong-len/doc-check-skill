@@ -9,9 +9,12 @@ import re
 from common import normalize_name
 
 # 词尾（长词优先，保证先匹配到「有限责任公司」而非「有限公司」）
+# 注意：「中心」「工程中心」不在此列。「中心」是普通名词而非企业形式，
+# 若当作形式词，投标文档里 ubiquitous 的「技术中心」「研发中心」会被抽成企业名，
+# 凭空造出第二个主体字号，触发假的 P0「疑似混主体」。
 _SUFFIXES = [
     "股份有限公司", "有限责任公司", "集团有限公司", "有限公司",
-    "集团", "研究院", "研究所", "设计院", "事务所", "工程中心", "中心",
+    "集团", "研究院", "研究所", "设计院", "事务所",
 ]
 
 # 行政区划前缀（按长度降序）
@@ -36,29 +39,37 @@ _MIN_PREFIX_LEN = 4
 
 _NAME_RE = re.compile(
     r"(?P<pre>[一-龥A-Za-z0-9·]{2,30}?)"
-    r"(?P<suf>股份有限公司|有限责任公司|集团有限公司|有限公司|集团|研究院|研究所|设计院|事务所|工程中心|中心)"
+    # 词尾取自 _SUFFIXES，避免形式词清单与匹配正则各写一份而互相走偏
+    r"(?P<suf>" + "|".join(_SUFFIXES) + ")"
 )
 
 
 def _is_form_fragment(prefix: str) -> bool:
-    """字号是否只是公司形式词的一段（如「股份」「有限」「责任」）。
+    """字号是否只是公司形式词的一部分（如「股份」「有限」「责任」）。
 
     正则的非贪婪匹配可能把形式词从中间切开，例如
     「中信建设集团股份有限公司」会先切出「中信建设集团」，余下「股份有限公司」
     又被当作一个名称切出「股份」+「有限公司」。这样的字号不是真实主体名。
+
+    只拒绝形式词的**严格前缀**。长度相等时不算片段，
+    否则「设计院有限公司」「研究中心有限公司」这类真实名称会被误杀。
     """
     for s in _SUFFIXES:
-        if 2 <= len(prefix) <= len(s) and s.startswith(prefix):
+        if 2 <= len(prefix) < len(s) and s.startswith(prefix):
             return True
     return False
 
 
 def _trim_prefix(prefix: str) -> str:
-    """切掉前缀中的连接词，取最长的合格切分作为字号主体。
+    """切掉前缀中的连接词，取最短的合格切分作为字号主体。
 
     枚举每个连接词的出现位置，切掉它及其之前的部分，在长度不小于
-    _MIN_PREFIX_LEN 的候选中取最长的那个。长度都不合格时完全不裁剪——
+    _MIN_PREFIX_LEN 的候选中取最短的一个——也就是最靠后的那个连接词，
+    同时跳过切完太短的候选。长度都不合格时完全不裁剪：
     连接词本身可能是字号的一部分（「华为技术」中的「为」）。
+
+    取最短而非最长，是因为候选长度随连接词位置右移而变短，
+    取最长等于取最早的连接词，会把「由甲方及乙方共同委托」这样的句子碎片带进名字。
     """
     best = None
     for conn in _CONNECTORS:
@@ -69,7 +80,7 @@ def _trim_prefix(prefix: str) -> str:
                 break
             candidate = prefix[idx + len(conn):].strip()
             if len(candidate) >= _MIN_PREFIX_LEN:
-                if best is None or len(candidate) > len(best):
+                if best is None or len(candidate) < len(best):
                     best = candidate
             start = idx + 1
     if best is None:
