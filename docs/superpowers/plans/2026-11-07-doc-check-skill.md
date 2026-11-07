@@ -1320,6 +1320,8 @@ git commit -m "feat: add text extractor, dispatcher and manifest builder"
 - Produces:
   - `entities.extract_company_names(text: str) -> list[str]`
   - `entities.core_key(name: str) -> str`
+  - `entities.canonical_core(name: str) -> str`
+  - `entities.canonical_name(name: str) -> str`
   - `entities.group_variants(names: list[str]) -> list[dict]`
   - `entities.same_entity(a: str, b: str) -> bool`
 
@@ -1328,6 +1330,7 @@ git commit -m "feat: add text extractor, dispatcher and manifest builder"
 `tests/test_entities.py`:
 ```python
 from entities import (
+    canonical_core,
     core_key,
     extract_company_names,
     group_variants,
@@ -1407,6 +1410,42 @@ def test_group_variants_clusters_by_core():
     assert sizes == [1, 2]
     two = next(g for g in groups if len(g["names"]) == 2)
     assert set(two["names"]) == {"北京华信科技有限公司", "北京华信科技有限责任公司"}
+
+
+def test_weak_connector_characters_inside_names_are_preserved():
+    assert extract_company_names("和而泰智能控制股份有限公司") == ["和而泰智能控制股份有限公司"]
+    assert extract_company_names("中国联合网络通信集团有限公司") == ["中国联合网络通信集团有限公司"]
+    assert extract_company_names("清华同方能源环保股份有限公司") == ["清华同方能源环保股份有限公司"]
+
+
+def test_same_entity_uses_suffix_not_prefix():
+    # 带连接词前缀的同一写法与干净写法同属一个主体
+    assert same_entity("由北京华信科技有限公司", "北京华信科技有限公司")
+    # 前缀关系会误并这两个不同主体
+    assert not same_entity("中国建筑", "中国建筑科技")
+    assert not same_entity("华信科技有限公司", "华信科技信息有限公司")
+
+
+def test_parentheses_in_company_names():
+    assert extract_company_names("北京华信(集团)有限公司") == ["北京华信(集团)有限公司"]
+    assert extract_company_names("北京华信（集团）科技有限公司") == ["北京华信（集团）科技有限公司"]
+    assert extract_company_names("（北京华信科技有限公司）") == ["北京华信科技有限公司"]
+
+
+def test_group_variants_keeps_distinct_cores_apart():
+    groups = group_variants(["华信科技有限公司", "华信科技信息有限公司"])
+    assert len(groups) == 2
+
+
+def test_group_variants_canonicals_ignore_leading_weak_connector():
+    groups = group_variants(["与上海远大信息技术有限公司", "上海远大信息技术有限公司"])
+    assert len(groups) == 1
+    assert groups[0]["canonicals"] == ["上海远大信息技术有限公司"]
+
+
+def test_canonical_core_collapses_weak_prefix():
+    assert canonical_core("与上海远大信息技术有限公司") == "上海远大信息技术"
+    assert canonical_core("上海远大信息技术有限公司") == "上海远大信息技术"
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1446,19 +1485,35 @@ _REGIONS = [
     "重庆", "台湾", "香港", "澳门",
 ]
 
-# 连接词：用于把「本项目由北京华信科技有限公司」中的前缀裁掉
-_CONNECTORS = [
-    "以及", "并且", "联合", "协作", "采购方", "招标人", "招标代理", "甲方", "乙方",
-    "受托", "委托", "由", "是", "与", "和", "及", "向", "为", "对", "给", "经", "从",
-    "同", "并", "或",
+# 连接词分两类。
+#
+# 强连接词是句子层面的标记，其后几乎必然是字号，可以裁掉前缀：
+#   「本项目由北京华信科技有限公司」「甲方及乙方共同委托…」
+#
+# 弱连接词同时也是字号里常见的字——「和而泰」「中国联合」「清华同方」
+# 都是真实字号的一部分。弱连接词单独出现时不能裁，否则真实公司名会被截断
+# （「和而泰智能控制股份有限公司」会被截成「而泰智能控制股份有限公司」）。
+_STRONG_CONNECTORS = [
+    "以及", "并且", "我方", "贵司", "双方", "各方", "甲方", "乙方", "中标人",
+    "投标人", "供应商", "承包人", "采购方", "招标人", "招标代理", "代理",
+    "受托", "委托", "由",
+]
+_WEAK_CONNECTORS = [
+    "联合", "协作", "为", "和", "同", "经", "并", "及", "与", "是", "从",
+    "给", "向", "对", "或",
 ]
 
 # 裁剪后至少要剩下的字号长度。太短说明连接词本身是字号的一部分
 # （「华为技术」中的「为」），此时不裁剪。
 _MIN_PREFIX_LEN = 4
 
+# 纯行业词，不能单独作为字号。出现「科技有限公司」这种名字说明是切错了。
+_NON_NAME_WORDS = {
+    "科技", "技术", "信息", "网络", "发展", "建设", "投资", "贸易", "工程",
+}
+
 _NAME_RE = re.compile(
-    r"(?P<pre>[一-龥A-Za-z0-9·]{2,30}?)"
+    r"(?P<pre>[一-龥A-Za-z0-9·（）()]{2,30}?)"
     r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
 
@@ -1479,19 +1534,29 @@ def _is_form_fragment(prefix: str) -> bool:
     return False
 
 
+def _strip_unbalanced_parens(name: str) -> str:
+    """去掉不成对的括号。
+
+    括号被纳入字号字符类后，「（北京华信科技有限公司）」会切出
+    「（北京华信科技有限公司」，尾部括号留在名字外面。
+    """
+    for op, cl in (("(", ")"), ("（", "）")):
+        while name.startswith(op) and cl not in name:
+            name = name[1:]
+        while name.endswith(cl) and op not in name:
+            name = name[:-1]
+    return name
+
+
 def _trim_prefix(prefix: str) -> str:
-    """切掉前缀中的连接词，取最短的合格切分作为字号主体。
+    """切掉前缀中的强连接词，取最短的合格切分作为字号主体。
 
-    枚举每个连接词的出现位置，切掉它及其之前的部分，在长度不小于
+    枚举每个强连接词的出现位置，切掉它及其之前的部分，在长度不小于
     _MIN_PREFIX_LEN 的候选中取最短的一个——也就是最靠后的那个连接词，
-    同时跳过切完太短的候选。长度都不合格时完全不裁剪：
-    连接词本身可能是字号的一部分（「华为技术」中的「为」）。
-
-    取最短而非最长，是因为候选长度随连接词位置右移而变短，
-    取最长等于取最早的连接词，会把「由甲方及乙方共同委托」这样的句子碎片带进名字。
+    同时跳过切完太短的候选。长度都不合格时完全不裁剪。
     """
     best = None
-    for conn in _CONNECTORS:
+    for conn in _STRONG_CONNECTORS:
         start = 0
         while True:
             idx = prefix.find(conn, start)
@@ -1515,9 +1580,9 @@ def extract_company_names(text: str) -> list[str]:
         prefix = _trim_prefix(m.group("pre"))
         if len(prefix) < 2:
             continue
-        if _is_form_fragment(prefix):
+        if _is_form_fragment(prefix) or prefix in _NON_NAME_WORDS:
             continue
-        name = prefix + m.group("suf")
+        name = _strip_unbalanced_parens(prefix + m.group("suf"))
         key = normalize_name(name)
         if key in seen:
             continue
@@ -1552,31 +1617,85 @@ def core_key(name: str) -> str:
     return n
 
 
+def _strip_leading_weak(core: str) -> str:
+    """去掉字号开头的弱连接词。"""
+    changed = True
+    while changed and core:
+        changed = False
+        for w in _WEAK_CONNECTORS:
+            if core.startswith(w) and len(core) > len(w):
+                core = core[len(w):]
+                changed = True
+                break
+    return core
+
+
+def canonical_core(name: str) -> str:
+    """主体标识：核心字号再去掉开头的弱连接词。
+
+    「与上海远大信息技术有限公司」与「上海远大信息技术有限公司」
+    的 canonical_core 相同，判定混主体时不能算成两个主体。
+    """
+    return _strip_leading_weak(core_key(name))
+
+
+def canonical_name(name: str) -> str:
+    """同一主体的规范写法：去掉开头的弱连接词。"""
+    for s in _SUFFIXES:
+        if name.endswith(s):
+            return _strip_leading_weak(name[: -len(s)]) + s
+    return _strip_leading_weak(name)
+
+
 def same_entity(a: str, b: str) -> bool:
-    """两个名称是否指向同一主体。"""
-    ca, cb = core_key(a), core_key(b)
+    """两个名称是否指向同一主体。
+
+    用**后缀**关系判定：核心字号互为后缀即视为同一主体。
+    前缀关系会误并「中国建筑」与「中国建筑科技」这两个不同主体，
+    后缀关系则能把带连接词前缀的同一主体（「由北京华信科技」）
+    与干净写法归到一起，同时保住简称（「北京华信」与「北京华信科技有限公司」）。
+    """
+    ca, cb = canonical_core(a), canonical_core(b)
     if not ca or not cb:
         return False
     if ca == cb:
         return True
     shorter, longer = sorted([ca, cb], key=len)
-    if len(shorter) >= 3 and longer.startswith(shorter):
+    if len(shorter) >= 2 and longer.endswith(shorter):
         return True
     return False
 
 
 def group_variants(names: list[str]) -> list[dict]:
-    """按核心字号聚类。返回 [{core, names}]，names 按首次出现排序。"""
+    """按主体聚类。
+
+    返回 [{core, names, canonicals}]：
+    - names      该主体的原始写法，按首次出现排序
+    - canonicals 去掉弱连接词前缀后的写法集合。同一写法只算一种，
+                 用来判断「同一主体是否出现了多种写法」——
+                 「与上海远大信息技术有限公司」和「上海远大信息技术有限公司」
+                 规范写法相同，不算两种写法
+    - core       成员中最长的核心字号
+    """
     groups: list[dict] = []
     for name in names:
         placed = False
         for g in groups:
             if same_entity(name, g["names"][0]):
                 g["names"].append(name)
+                canon = canonical_name(name)
+                if canon not in g["canonicals"]:
+                    g["canonicals"].append(canon)
                 placed = True
                 break
         if not placed:
-            groups.append({"core": core_key(name), "names": [name]})
+            groups.append({
+                "core": core_key(name),
+                "names": [name],
+                "canonicals": [canonical_name(name)],
+            })
+    for g in groups:
+        g["core"] = max((core_key(n) for n in g["names"]), key=len)
     return groups
 ```
 
@@ -2492,6 +2611,17 @@ def test_no_entity_no_issue():
     docs = [_doc("a.docx", ["本段落不含任何公司名称。"])]
     result = analyze(docs)
     assert [i for i in result["issues"] if i["category"] in ("主体名称", "主体串写")] == []
+
+
+def test_leading_weak_connector_is_not_a_second_entity():
+    # 「与上海远大信息技术有限公司」与「上海远大信息技术有限公司」是同一主体，
+    # 不能触发混主体，也不能触发写法不统一
+    docs = [_doc("a.docx", [
+        "本项目与上海远大信息技术有限公司共同承担。",
+        "上海远大信息技术有限公司负责实施。",
+    ])]
+    result = analyze(docs)
+    assert [i for i in result["issues"] if i["category"] in ("主体名称", "主体串写")] == []
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2504,7 +2634,7 @@ Expected: FAIL，找不到对应 category
 在 `scripts/analyze.py` 追加：
 
 ```python
-from entities import core_key, extract_company_names, group_variants
+from entities import canonical_core, extract_company_names, group_variants
 
 
 def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
@@ -2518,7 +2648,7 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
             found.extend(extract_company_names(b.get("text", "")))
         per_file[doc["file"]] = found
         for name in found:
-            key = core_key(name)
+            key = canonical_core(name)
             if key not in names:
                 names[key] = {"name": name, "core": key, "count": 0, "files": []}
             names[key]["count"] += 1
@@ -2528,7 +2658,8 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
     variants = group_variants([n["name"] for n in names.values()])
 
     for group in variants:
-        if len(group["names"]) < 2:
+        writings = group.get("canonicals") or group["names"]
+        if len(writings) < 2:
             continue
         issues.append(make_finding(
             severity="P1", category="主体名称", detector="deterministic",
@@ -2536,15 +2667,15 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
             locator={"type": "file"},
             quote=group["names"][0],
             description=(
-                f"同一主体出现 {len(group['names'])} 种名称写法："
-                + "、".join(group["names"])
+                f"同一主体出现 {len(writings)} 种名称写法："
+                + "、".join(writings)
                 + "。全套文档应统一使用同一名称。"
             ),
-            suggestion=f"统一为正式全称「{group['names'][0]}」。",
+            suggestion=f"统一为正式全称「{writings[0]}」。",
         ))
 
     for doc in documents:
-        cores = {core_key(n) for n in per_file[doc["file"]]}
+        cores = {canonical_core(n) for n in per_file[doc["file"]]}
         if len(cores) >= 2:
             shown = sorted({n for n in per_file[doc["file"]]})
             issues.append(make_finding(
