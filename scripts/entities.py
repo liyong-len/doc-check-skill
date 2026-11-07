@@ -55,10 +55,8 @@ _NON_NAME_WORDS = {
 
 # 括号组整体进入字号：括号里的「集团」是字号的一部分，不能当成公司词尾，
 # 否则「北京华信(集团)有限公司」会被切成「北京华信(集团」。
-_PAREN_GROUP = r"(?:\([^()]*\)|（[^（）]*）)"
-
 _NAME_RE = re.compile(
-    r"(?P<pre>(?:[一-龥A-Za-z0-9·]|" + _PAREN_GROUP + r"){2,30}?)"
+    r"(?P<pre>(?:[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）){2,30}?)"
     r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
 
@@ -158,9 +156,15 @@ def extract_company_names(text: str) -> list[str]:
 
 
 def _strip_suffix(name: str) -> str:
-    for s in _SUFFIXES:
-        if name.endswith(s):
-            return name[: -len(s)]
+    """去掉公司词尾，可能叠层：「XX集团股份有限公司」→「XX集团」→「XX」。"""
+    changed = True
+    while changed:
+        changed = False
+        for s in _SUFFIXES:
+            if name.endswith(s) and len(name) > len(s):
+                name = name[: -len(s)]
+                changed = True
+                break
     return name
 
 
@@ -172,7 +176,7 @@ def _strip_region(name: str) -> str:
 
 
 def core_key(name: str) -> str:
-    """核心字号：去掉公司词尾与行政区划前缀后的剩余部分。
+    """核心字号：去掉公司词尾（可叠层）与行政区划前缀后的剩余部分。
 
     刻意不剥离行业词。行业词参与主体区分：
     「华信科技」与「华信信息技术」是两个不同主体，剥掉行业词会把它们混为一谈。
@@ -184,12 +188,16 @@ def core_key(name: str) -> str:
 
 
 def _strip_leading_weak(core: str) -> str:
-    """去掉字号开头的弱连接词。"""
+    """去掉字号开头的弱连接词。
+
+    只有在去掉后仍剩至少 _MIN_PREFIX_LEN 个字时才裁，
+    否则「与信科技」「同创」这类真实字号会被裁成「信科技」「创」。
+    """
     changed = True
     while changed and core:
         changed = False
         for w in _WEAK_CONNECTORS:
-            if core.startswith(w) and len(core) > len(w):
+            if core.startswith(w) and len(core) - len(w) >= _MIN_PREFIX_LEN:
                 core = core[len(w):]
                 changed = True
                 break
@@ -222,15 +230,13 @@ def canonical_name(name: str) -> str:
 def same_entity(a: str, b: str) -> bool:
     """两个名称是否指向同一主体。
 
-    主要用**后缀**关系判定：核心字号互为后缀即视为同一主体。
-    前缀关系会误并「中国建筑」与「中国建筑科技」这两个不同主体，
-    后缀关系则能把带连接词前缀的同一主体（「由北京华信科技」）
-    与干净写法归到一起。
+    核心字号相等即同一主体。此外两种关系也算：
+    - 互为**后缀**：带连接词前缀的同一写法与干净写法（「由北京华信科技」）
+    - 互为**前缀**且较短一方像简称（≤3 字，或以行政区划开头）：
+      「北京华信」与「北京华信科技有限公司」
 
-    简称（「北京华信」之于「北京华信科技有限公司」）是前缀关系，
-    只在两种情况下认可：短字号本身以行政区划开头，
-    或短字号短到只剩两个字（「华为」之于「华为技术」）。
-    其余前缀关系一律不认，避免把「中国建筑」与「中国建筑科技」并成一个主体。
+    前缀关系不加限制会误并「中国建筑」与「中国建筑科技」，
+    所以要求较短一方是简称形态。
     """
     ca, cb = canonical_core(a), canonical_core(b)
     if not ca or not cb:
@@ -238,10 +244,12 @@ def same_entity(a: str, b: str) -> bool:
     if ca == cb:
         return True
     shorter, longer = sorted([ca, cb], key=len)
-    if len(shorter) >= 2 and longer.endswith(shorter):
+    if len(shorter) < 2:
+        return False
+    if longer.endswith(shorter):
         return True
     if longer.startswith(shorter) and (
-        _starts_with_region(shorter) or len(shorter) <= 3
+        len(shorter) <= 3 or _starts_with_region(shorter)
     ):
         return True
     return False

@@ -95,10 +95,34 @@ def test_same_entity_uses_suffix_not_prefix():
     assert not same_entity("华信科技有限公司", "华信科技信息有限公司")
 
 
-def test_parentheses_in_company_names():
+def test_short_form_and_full_name_are_same_entity():
+    assert same_entity("北京华信", "北京华信科技有限公司")
+
+
+def test_repeated_suffix_layer_is_one_entity():
+    assert same_entity("中国建筑集团股份有限公司", "中国建筑集团")
+
+
+def test_leading_weak_connector_only_stripped_when_long_enough():
+    # 真实字号以弱连接词开头时不能被裁
+    assert canonical_core("与信科技有限公司") == "与信科技"
+    assert canonical_core("同创股份有限公司") == "同创"
+    # 连接词后是行政区划开头时才裁
+    assert canonical_core("与上海远大信息技术有限公司") == "上海远大信息技术"
+
+
+def test_paren_group_is_consumed_atomically():
+    # 括号里的「集团」是字号的一部分，不能当成公司词尾切开
     assert extract_company_names("北京华信(集团)有限公司") == ["北京华信(集团)有限公司"]
     assert extract_company_names("北京华信（集团）科技有限公司") == ["北京华信（集团）科技有限公司"]
     assert extract_company_names("（北京华信科技有限公司）") == ["北京华信科技有限公司"]
+
+
+def test_extract_company_names_skips_split_form_word():
+    # 「股份有限公司」不是主体名，是形式词被从中间切开的结果
+    names = extract_company_names("中标候选人：中信建设集团股份有限公司")
+    assert "股份有限公司" not in names
+    assert "中信建设集团" in names
 
 
 def test_group_variants_keeps_distinct_cores_apart():
@@ -115,10 +139,3 @@ def test_group_variants_canonicals_ignore_leading_weak_connector():
 def test_canonical_core_collapses_weak_prefix():
     assert canonical_core("与上海远大信息技术有限公司") == "上海远大信息技术"
     assert canonical_core("上海远大信息技术有限公司") == "上海远大信息技术"
-
-
-def test_extract_company_names_skips_split_form_word():
-    # 「股份有限公司」不是主体名，是形式词被从中间切开的结果
-    names = extract_company_names("中标候选人：中信建设集团股份有限公司")
-    assert "股份有限公司" not in names
-    assert "中信建设集团" in names
