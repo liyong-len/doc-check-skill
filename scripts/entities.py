@@ -36,7 +36,7 @@ _REGIONS = [
 # （「和而泰智能控制股份有限公司」会被截成「而泰智能控制股份有限公司」）。
 _STRONG_CONNECTORS = [
     "以及", "并且", "我方", "贵司", "双方", "各方", "甲方", "乙方", "中标人",
-    "投标人", "供应商", "承包人", "采购方", "招标人", "招标代理", "代理",
+    "投标人", "供应商", "承包人", "采购方", "招标人", "招标代理",
     "受托", "委托", "由",
 ]
 _WEAK_CONNECTORS = [
@@ -70,7 +70,7 @@ _NON_NAME_WORDS = {
 # 括号组整体进入字号：括号里的「集团」是字号的一部分，不能当成公司词尾，
 # 否则「北京华信(集团)有限公司」会被切成「北京华信(集团」。
 _NAME_RE = re.compile(
-    r"(?P<pre>(?:[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）){2,30}?)"
+    r"(?P<pre>[一-龥A-Za-z0-9·](?:[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）){1,29}?)"
     r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
 
@@ -254,11 +254,15 @@ def canonical_core(name: str) -> str:
 
 
 def canonical_name(name: str) -> str:
-    """同一主体的规范写法：去掉开头的弱连接词。"""
+    """同一主体的规范写法：归一化后去掉开头的弱连接词。
+
+    必须与 canonical_core 用同一套归一化，否则全角半角括号、
+    空白差异会被当成两种写法，报出假的「同一主体出现多种写法」。
+    """
     for s in _SUFFIXES:
         if name.endswith(s):
-            return _strip_leading_weak(name[: -len(s)]) + s
-    return _strip_leading_weak(name)
+            return _strip_leading_weak(normalize_name(name[: -len(s)])) + s
+    return _strip_leading_weak(normalize_name(name))
 
 
 def _extra_head_is_clean(longer: str, shorter: str) -> bool:

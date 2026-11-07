@@ -1,5 +1,6 @@
 from entities import (
     canonical_core,
+    canonical_name,
     core_key,
     extract_company_names,
     group_variants,
@@ -155,6 +156,23 @@ def test_strong_prefixed_core_is_still_merged():
 def test_name_extends_over_a_following_form_word():
     assert extract_company_names("中国建筑设计院有限公司") == ["中国建筑设计院有限公司"]
     assert extract_company_names("中信建设集团股份有限公司") == ["中信建设集团股份有限公司"]
+
+
+def test_leading_annotation_parens_are_not_part_of_the_name():
+    # 注解与编号括号不是字号的一部分
+    assert extract_company_names("（招标人）北京华信科技有限公司") == ["北京华信科技有限公司"]
+    assert extract_company_names("（1）北京华信科技有限公司") == ["北京华信科技有限公司"]
+
+
+def test_agent_word_inside_a_company_name_is_not_a_connector():
+    # 「代理记账」「代理财务」里的「代理」是字号的一部分
+    assert extract_company_names("深圳市代理记账服务有限公司") == ["深圳市代理记账服务有限公司"]
+    assert extract_company_names("深圳代理财务咨询有限公司") == ["深圳代理财务咨询有限公司"]
+
+
+def test_canonical_name_normalizes_width_and_whitespace():
+    assert canonical_name("北京华信（集团）有限公司") == canonical_name("北京华信(集团)有限公司")
+    assert canonical_name("北京 华信科技有限公司") == "北京华信科技有限公司"
 
 
 def test_group_variants_keeps_distinct_cores_apart():
