@@ -628,6 +628,16 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
         writings = group.get("canonicals") or group["names"]
         if len(writings) < 2:
             continue
+        preferred = _preferred_writing(writings)
+        if preferred:
+            suggestion = f"统一为正式全称「{preferred}」。"
+        else:
+            # 两种写法都是注册过的全称时，文档里没有依据能判断哪一个才是
+            # 正式写法。不能凭空挑一个，让用户去统一两个注册名称。
+            suggestion = (
+                "全套文档统一使用同一名称；文档中没有判断哪一种是正式全称的依据，"
+                "需人工核实后确定。"
+            )
         issues.append(make_finding(
             severity="P1", category="主体名称", detector="deterministic",
             confidence="确定", file=_first_file_for(names, group["names"]),
@@ -638,7 +648,7 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
                 + "、".join(writings)
                 + "。全套文档应统一使用同一名称。"
             ),
-            suggestion=f"统一为正式全称「{_preferred_writing(writings)}」。",
+            suggestion=suggestion,
         ))
 
     for doc in documents:
@@ -689,14 +699,21 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
 
 
 def _preferred_writing(writings: list[str]) -> str:
-    """建议统一成哪一种写法：优先带企业形式词的全称。
+    """建议统一成哪一种写法。
+
+    只有一种写法带企业形式词时，它才是「正式全称」，建议统一成它有依据
+    （另一个写法是裸字号，裸字号不是正式全称）。
+
+    两种写法都是注册过的全称（「…有限公司」与「…有限责任公司」）时，
+    文档里没有任何依据能判断哪一个才是正式写法——那是企业登记信息，
+    文档内无从查证。此时不选，让用户自己确认。
 
     裸字号（「北京华信」）不是正式全称，让用户「统一为北京华信」是错的建议。
     """
-    for w in writings:
-        if is_full_company_name(w):
-            return w
-    return writings[0] if writings else ""
+    full = [w for w in writings if is_full_company_name(w)]
+    if len(full) == 1:
+        return full[0]
+    return ""
 
 
 def _first_file_for(names: dict, group_names: list[str]) -> str:
