@@ -4008,7 +4008,8 @@ def _section_1(manifest, consistency, findings) -> str:
     out.append("<h3>重点提示</h3>")
     out.append(
         f"<p>识别到主体名称 {len(entity_names)} 个，"
-        f"疑似混主体问题 {sum(1 for f in all_issues if f.get('category') == '主体串写')} 处，"
+        f"疑似混主体（文件级）{sum(1 for f in all_issues if f.get('category') == '主体串写')} 处，"
+        f"主体名误用（段落级）{sum(1 for f in all_issues if f.get('category') == '主体名误用')} 处，"
         f"待补充内容 {len(todo)} 处。</p>"
     )
     return "".join(out)
@@ -4069,6 +4070,7 @@ def _file_summary(manifest: dict, fname: str) -> str:
     st = doc.get("stats", {})
     bits = [
         f"规模：{st.get('words', 0)} 字 / {st.get('paragraphs', 0)} 段 / {st.get('tables', 0)} 表",
+        f"结构：{st.get('tables', 0)} 表 / {st.get('rows', 0)} 行 / {st.get('sheets', 0)} 个工作表",
         f"主体名：{'、'.join(doc.get('entities', [])) or '未识别'}",
     ]
     return f'<div class="muted">{"　｜　".join(bits)}</div>'
@@ -4491,9 +4493,12 @@ def _section_4(consistency: dict) -> str:
     return "".join(out)
 
 
-def _section_5(findings: list[dict], depth: str = "") -> str:
+def _section_5(findings: list[dict], depth: str = "", deterministic_issues: list[dict] | None = None) -> str:
     todo = [f for f in findings if f.get("category") == "待补充内容"]
-    verify = [f for f in findings if f.get("confidence") == "疑似 · 需人工核实"]
+    # 需人工核实项必须覆盖两层：确定性层的 P0 主体串写也是「疑似」，
+    # 只筛模型侧会让 §5 印出「无。」而同一个 P0 在 §2/§3 里挂着。
+    verify = [f for f in list(findings) + list(deterministic_issues)
+              if f.get("confidence") == "疑似 · 需人工核实"]
     out = ["<h2 id='s5'>§5 待补充与待核实</h2>"]
     out.append("<h3>待补充内容</h3>")
     if todo:
@@ -4510,9 +4515,10 @@ def _section_5(findings: list[dict], depth: str = "") -> str:
     out.append("<h3>需人工核实项</h3>")
     if verify:
         out.append(_table(
-            ["文件", "位置", "问题", "建议"],
-            [[esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
-              esc(f.get("description", "")), esc(f.get("suggestion", ""))] for f in verify],
+            ["☐", "文件", "位置", "问题", "为何需要", "建议"],
+            [["☐", esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+              esc(f.get("quote", "")), esc(f.get("description", "")),
+              esc(f.get("suggestion", ""))] for f in verify],
         ))
     else:
         out.append("<p class='muted'>无。</p>")
@@ -4565,7 +4571,7 @@ _RULES = [
     ("引用张冠李戴", "引用处语境与被引内容主题不符"),
     ("待补充内容", "缺失数据、空白字段、应附材料"),
     ("数字逻辑", "合计与分项不符、比例关系不成立"),
-    ("表述歧义", "表述不清或语义歧义"),
+    ("表述不清", "表述不清或语义歧义"),
     ("术语一致性", "同义异形术语混用"),
 ]
 
@@ -4623,7 +4629,7 @@ def _section_7(manifest: dict) -> str:
         _section_2(consistency, findings),
         _section_3(consistency, findings, manifest),
         _section_4(consistency),
-        _section_5(findings, manifest.get("depth", "")),
+        _section_5(findings, manifest.get("depth", ""), consistency.get("issues", [])),
         _section_6(baseline_diff),
         _section_7(manifest),
     ])
@@ -4910,7 +4916,7 @@ Expected: FAIL，references 目录不存在
 表头行写法不统一、跨页表格缺少重复表头。xlsx 的表头行取首行非空且下方存在数据的行。
 
 ## 主体名称
-同一主体出现两种以上名称写法。变体判定基于核心字号：名称去掉公司词尾与行政区划前缀后的剩余部分；核心字号相同，或较短者是较长者的前缀且不短于 3 个字符，视为同一主体。行业词不剥离，「华信科技」与「华信信息技术」是两个不同主体。
+同一主体出现两种以上名称写法。变体判定基于规范写法：去掉公司词尾（可叠层）、行政区划前缀与开头的弱连接词后的剩余部分。行业词不剥离，「华信科技」与「华信信息技术」是两个不同主体。「与上海远大信息技术有限公司」与「上海远大信息技术有限公司」规范写法相同，不算两种写法。
 
 ## 主体串写
 同一文件内出现两个及以上不同核心字号的主体名称即报。因无外部依据，置信度为「疑似 · 需人工核实」，不升级为确定。
@@ -5978,7 +5984,7 @@ Expected: PASS，2 passed
 
 格式与体例（脚本判定，结果确定）：字体字号一致性、段落格式一致性、标题层级体例、图表题注体例、表格体例、主体名称写法一致性、数字与单位、引用标记、列表与编号、术语与缩写。
 
-内容与逻辑（模型判定）：错别字用词、标点格式、前后矛盾、主体串写、引用张冠李戴、待补充内容、数字逻辑、表述不清、术语一致性。
+内容与逻辑（模型判定）：错别字用词、标点格式、前后矛盾、主体名误用、引用张冠李戴、待补充内容、数字逻辑、表述不清、术语一致性。
 
 ## 它不做什么
 
