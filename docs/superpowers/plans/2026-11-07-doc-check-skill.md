@@ -3949,10 +3949,14 @@ def _section_0(manifest: dict) -> str:
             esc(st.get("words", 0)),
             esc(st.get("paragraphs", 0)),
             esc(st.get("tables", 0)),
+            esc("、".join(d.get("entities", [])) or "未识别"),
             esc(d.get("sha256", "")[:12]),
         ])
     out = [f"<h2 id='s0'>§0 检查范围与未能检查项</h2>"]
-    out.append(_table(["文件", "类型", "页数", "字数", "段落", "表格", "SHA256 前缀"], rows))
+    out.append(_table(
+        ["文件", "类型", "页数", "字数", "段落", "表格", "推断出的主体名", "SHA256 前缀"],
+        rows,
+    ))
     fails = manifest.get("failures", [])
     if fails:
         out.append("<h3>未能检查的文件</h3>")
@@ -4031,7 +4035,7 @@ def _section_2(consistency, findings) -> str:
     return "".join(out)
 
 
-def _section_3(consistency, findings) -> str:
+def _section_3(consistency, findings, manifest) -> str:
     by_file: dict[str, list[dict]] = {}
     for f in list(consistency.get("issues", [])) + list(findings):
         by_file.setdefault(f.get("file", ""), []).append(f)
@@ -4042,6 +4046,7 @@ def _section_3(consistency, findings) -> str:
     for fname in sorted(by_file):
         items = by_file[fname]
         out.append(f"<details open><summary>{esc(fname)}（{len(items)} 个问题）</summary>")
+        out.append(_file_summary(manifest, fname))
         groups: dict[str, list[dict]] = {}
         for f in items:
             groups.setdefault(f.get("category", "未分类"), []).append(f)
@@ -4051,6 +4056,22 @@ def _section_3(consistency, findings) -> str:
                 out.append(_issue_card(f))
         out.append("</details>")
     return "".join(out)
+
+
+def _file_summary(manifest: dict, fname: str) -> str:
+    """文件摘要：规模、结构、主体名、风格指纹。"""
+    doc = next(
+        (d for d in manifest.get("documents", []) if d.get("file") == fname),
+        None,
+    )
+    if not doc:
+        return ""
+    st = doc.get("stats", {})
+    bits = [
+        f"规模：{st.get('words', 0)} 字 / {st.get('paragraphs', 0)} 段 / {st.get('tables', 0)} 表",
+        f"主体名：{'、'.join(doc.get('entities', [])) or '未识别'}",
+    ]
+    return f'<div class="muted">{"　｜　".join(bits)}</div>'
 
 
 _LIMITATION = (
@@ -4100,7 +4121,7 @@ def build_html(data: dict) -> str:
         f"{_section_0(manifest)}"
         f"{_section_1(manifest, consistency, findings)}"
         f"{_section_2(consistency, findings)}"
-        f"{_section_3(consistency, findings)}"
+        f"{_section_3(consistency, findings, manifest)}"
         f"<div class='limit'><b>能力边界</b><br>{esc(_LIMITATION)}</div>"
         "</div></body></html>"
     )
@@ -4123,8 +4144,13 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
         from baseline import diff_findings, diff_manifests
 
         prev = read_json(Path(baseline))
+        # 复查对比必须覆盖**两层**：模型写的 findings 与确定性层的 issues。
+        # 只比模型侧，新出现的 P0 混主体会在 §2/§3 显示却不被计入 §6，
+        # 等于在专门用来追踪变化的章节里说了假话。
+        current_all = list(findings) + list(consistency.get("issues", []))
+        prev_all = list(prev.get("findings", [])) + list(prev.get("issues", []))
         baseline_diff = {
-            "findings": diff_findings(findings, prev.get("findings", [])),
+            "findings": diff_findings(current_all, prev_all),
             "files": diff_manifests(manifest, prev.get("manifest", {})),
         }
 
@@ -4142,6 +4168,7 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
     write_json(work / "last-findings.json", {
         "generated_at": manifest.get("generated_at", ""),
         "findings": findings,
+        "issues": consistency.get("issues", []),
         "manifest": manifest,
     })
     return out
@@ -4258,7 +4285,7 @@ git commit -m "feat: add baseline diff and single-file HTML report renderer"
 
 **Interfaces:**
 - Consumes: `render.build_html` 的 `data` 字典，新增键 `baseline_diff`
-- Produces: `render._section_4(consistency) -> str`、`render._section_5(findings) -> str`、`render._section_6(baseline_diff) -> str`、`render._section_7(manifest) -> str`
+- Produces: `render._section_4(consistency) -> str`、`render._section_5(findings, depth) -> str`、`render._section_6(baseline_diff) -> str`、`render._section_7(manifest) -> str`
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -4444,28 +4471,40 @@ def _section_4(consistency: dict) -> str:
     else:
         out.append("<p class='muted'>未识别到公司类名称。</p>")
     variants = entities.get("variants", [])
-    multi = [v for v in variants if len(v.get("names", [])) > 1]
+    # 按**规范写法**判定变体，不能按原始写法：
+    # 「与上海远大信息技术有限公司」与「上海远大信息技术有限公司」
+    # 规范写法相同，确定性检查刻意视为同一种写法，这里若按原始写法
+    # 就会报出一条与检查结论相矛盾的「写法变体」。
+    multi = [
+        v for v in variants
+        if len(v.get("canonicals") or v.get("names", [])) > 1
+    ]
     if multi:
         out.append(_table(
             ["核心字号", "写法变体"],
-            [[esc(v.get("core", "")), esc("、".join(v.get("names", [])))] for v in multi],
+            [[esc(v.get("core", "")),
+              esc("、".join(v.get("canonicals") or v.get("names", [])))]
+             for v in multi],
         ))
     else:
         out.append("<p class='muted'>未发现同一主体的多种写法。</p>")
     return "".join(out)
 
 
-def _section_5(findings: list[dict]) -> str:
+def _section_5(findings: list[dict], depth: str = "") -> str:
     todo = [f for f in findings if f.get("category") == "待补充内容"]
     verify = [f for f in findings if f.get("confidence") == "疑似 · 需人工核实"]
     out = ["<h2 id='s5'>§5 待补充与待核实</h2>"]
     out.append("<h3>待补充内容</h3>")
     if todo:
         out.append(_table(
-            ["文件", "位置", "缺失内容", "建议"],
-            [[esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
-              esc(f.get("quote", "")), esc(f.get("suggestion", ""))] for f in todo],
+            ["☐", "文件", "位置", "缺失内容", "为何需要", "建议"],
+            [["☐", esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+              esc(f.get("quote", "")), esc(f.get("description", "")),
+              esc(f.get("suggestion", ""))] for f in todo],
         ))
+    elif depth == "quick":
+        out.append("<p class='muted'>本次档位为 quick，未覆盖「待补充内容」这一类别。</p>")
     else:
         out.append("<p class='muted'>未发现待补充内容。</p>")
     out.append("<h3>需人工核实项</h3>")
@@ -4531,8 +4570,25 @@ _RULES = [
 ]
 
 
+_DEPTH_COVERAGE = {
+    "quick": "阶段①全量确定性检查 + 阶段②仅做错别字与标点扫描。"
+             "未做语义互查：前后矛盾、主体串写、引用张冠李戴、待补充内容等类别本次未覆盖。",
+    "standard": "阶段①全量确定性检查 + 阶段②九类语义检查全做。",
+    "deep": "阶段①全量确定性检查 + 阶段②逐段细读，邻接窗口更大。",
+}
+
+
 def _section_7(manifest: dict) -> str:
     out = ["<h2 id='s7'>§7 附录</h2>"]
+    depth = manifest.get("depth", "")
+    out.append("<h3>本次检查范围</h3>")
+    out.append(_table(
+        ["项目", "内容"],
+        [
+            ["检查档位", depth or "未知"],
+            ["覆盖范围", _DEPTH_COVERAGE.get(depth, "未知档位，请核对 scripts/chunk.py 的 DEPTH_PARAMS。")],
+        ],
+    ))
     out.append("<h3>检查规则与判定标准</h3>")
     out.append(_table(["类别", "判定标准"], [[esc(a), esc(b)] for a, b in _RULES]))
     out.append("<h3>文件指纹</h3>")
@@ -4565,9 +4621,9 @@ def _section_7(manifest: dict) -> str:
         _section_0(manifest),
         _section_1(manifest, consistency, findings),
         _section_2(consistency, findings),
-        _section_3(consistency, findings),
+        _section_3(consistency, findings, manifest),
         _section_4(consistency),
-        _section_5(findings),
+        _section_5(findings, manifest.get("depth", "")),
         _section_6(baseline_diff),
         _section_7(manifest),
     ])
