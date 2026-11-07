@@ -6313,7 +6313,7 @@ python scripts/evaluate.py --gold tests/gold/gold_set.json --predicted .doc-chec
     {
       "file": "sample_company.docx",
       "category": "标点格式",
-      "quote": "本项目工期为 90 日历天,其余内容详见附件。",
+      "quote": "本项目服务期限为12个月,含一年质保。",
       "severity": "P2"
     }
   ]
