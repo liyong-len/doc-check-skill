@@ -277,3 +277,14 @@ def test_annotation_bracket_content_is_not_a_second_entity():
     assert extract_company_names("（华信集团）北京华信科技有限公司") == [
         "北京华信科技有限公司"
     ]
+
+
+def test_name_is_not_extended_over_a_form_word_inside_brackets():
+    # 括号里的「集团」是字号的一部分，不是名字的终点：
+    # 延伸过去会把括号一起并进名字，凭空多出一种写法
+    assert extract_company_names("北京华信科技有限公司（集团）") == [
+        "北京华信科技有限公司"
+    ]
+    assert extract_company_names("北京华信科技(集团)有限公司") == [
+        "北京华信科技(集团)有限公司"
+    ]

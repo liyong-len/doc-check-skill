@@ -94,8 +94,7 @@ _NAME_CHUNK_RE = re.compile(
     r"[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）"
 )
 
-# 在一段文字里找公司形式词
-_SUFFIX_SEARCH_RE = re.compile("|".join(map(re.escape, _SUFFIXES)))
+# 在一段文字里找公司形式词（括号里的形式词不算，见 _find_suffix_outside_brackets）
 
 
 def _is_form_fragment(prefix: str) -> bool:
@@ -206,6 +205,26 @@ def _has_name_boundary(text: str) -> bool:
     return False
 
 
+def _find_suffix_outside_brackets(seg: str) -> tuple[int, int] | None:
+    """在片段里找公司形式词，括号里的不算。
+
+    「北京华信科技有限公司（集团）」里的「集团」在括号里，
+    它不是名字的终点，不能把括号一起并进名字里。
+    """
+    i = 0
+    n = len(seg)
+    while i < n:
+        m = _NAME_CHUNK_RE.match(seg, i)
+        if not m:
+            break
+        if len(m.group(0)) == 1:      # 单个名字字符，括号组整体跳过
+            for s in _SUFFIXES:
+                if seg.startswith(s, i):
+                    return i, i + len(s)
+        i = m.end()
+    return None
+
+
 def _extend_over_suffix(text: str, end: int) -> int:
     """把名字延伸过紧跟其后的公司形式词，以及同一串里更靠后的形式词。
 
@@ -217,7 +236,6 @@ def _extend_over_suffix(text: str, end: int) -> int:
     终点。因此名字要一直延伸到本串里最后一个形式词为止——
     中间那段文字若出现了新主体的起点（连接词），就到此为止。
     """
-    n = len(text)
     changed = True
     while changed:
         changed = False
@@ -230,9 +248,9 @@ def _extend_over_suffix(text: str, end: int) -> int:
             continue
         seg_end = _segment_end(text, end)
         seg = text[end:seg_end]
-        m = _SUFFIX_SEARCH_RE.search(seg)
-        if m and not _has_name_boundary(seg[:m.start()]):
-            end += m.end()
+        found = _find_suffix_outside_brackets(seg)
+        if found and not _has_name_boundary(seg[:found[0]]):
+            end += found[1]
             changed = True
     return end
 
