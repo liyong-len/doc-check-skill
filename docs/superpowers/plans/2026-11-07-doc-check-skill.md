@@ -1380,8 +1380,10 @@ def test_form_fragment_guard_keeps_equal_length_names():
     # 形式词的严格前缀才是片段，长度相等的是真实字号
     assert extract_company_names("研究中心有限公司") == ["研究中心有限公司"]
     assert extract_company_names("设计院有限公司") == ["设计院有限公司"]
-    # 「股份」是「股份有限公司」的严格前缀，是片段
-    assert extract_company_names("中信建设集团股份有限公司") == ["中信建设集团"]
+    # 「股份」是「股份有限公司」的严格前缀，是片段，不应单独成一个名字
+    names = extract_company_names("中信建设集团股份有限公司")
+    assert names == ["中信建设集团股份有限公司"]
+    assert "股份有限公司" not in names
 
 
 def test_core_key_strips_suffix_and_region():
