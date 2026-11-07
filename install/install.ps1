@@ -4,6 +4,15 @@
 # 脚本里的中文会变成乱码甚至解析失败。
 $ErrorActionPreference = "Stop"
 
+# 控制台输出统一按 UTF-8 编码。
+#
+# Write-Host 默认按控制台代码页输出（中文 Windows 是 GBK），
+# 而 install_skill.py 按 UTF-8 输出。两段内容写进同一条 stdout，
+# 整条流就既不是 GBK 也不是 UTF-8：读的人只能看到一半乱码。
+# 设成 UTF-8 之后，安装器自己的提示与 Python 那半边是同一套编码。
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 # 原生命令（python / pip）返回非零退出码时只设置 $LASTEXITCODE，
 # 不直接抛 PowerShell 异常，这样下面的显式检查与中文提示才能生效。
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {

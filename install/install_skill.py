@@ -100,7 +100,13 @@ def write_text_no_bom(path: Path, text: str) -> None:
 
 
 def sync_dir(src: Path, dst: Path) -> int:
-    """把 src 同步到 dst：复制新增文件，删除 dst 里多出来的旧文件。"""
+    """把 src 同步到 dst：复制新增文件，删除 dst 里多出来的旧文件。
+
+    子目录**整体替换**，不合并：合并（dirs_exist_ok=True）只会覆盖同名文件，
+    仓库里删掉的文件会永远留在安装目录里。`scripts/extractors/` 正是这种
+    最容易变动的子目录，「仓库里删掉的文件会从技能目录里清掉」这条承诺
+    必须在每一层都成立。
+    """
     dst.mkdir(parents=True, exist_ok=True)
     removed = 0
     for child in sorted(dst.iterdir()):
@@ -121,10 +127,11 @@ def sync_dir(src: Path, dst: Path) -> int:
             continue
         target = dst / child.name
         if child.is_dir():
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
             shutil.copytree(
                 child,
                 target,
-                dirs_exist_ok=True,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
         else:
@@ -233,5 +240,10 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.stdout.reconfigure(encoding="utf-8")
+    # 两条流都要是 UTF-8：安装器（install.ps1）的提示与这里的输出
+    # 写进同一个 stdout，两边编码不一致，整条流就解码不出来。
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
     raise SystemExit(main())
