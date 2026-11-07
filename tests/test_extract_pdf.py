@@ -37,3 +37,33 @@ def test_extract_pdf_font_stats_present(tmp_path):
     doc = extract_pdf(_make_pdf(tmp_path))
     assert doc["font_stats"]
     assert any(f["size"] for f in doc["font_stats"])
+
+
+def _make_zero_page_pdf(tmp_path):
+    """手工拼一个没有页面的 PDF：reportlab 造不出零页文档。"""
+    bodies = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [] /Count 0 >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(bodies, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n" % (len(bodies) + 1)
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += (b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(bodies) + 1, xref))
+    path = tmp_path / "empty.pdf"
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_extract_pdf_zero_page_notes_no_content(tmp_path):
+    """零页 PDF 读不出内容，必须留下「需 OCR」注记，否则会被当成已检查。"""
+    doc = extract_pdf(_make_zero_page_pdf(tmp_path))
+    assert doc["stats"]["pages"] == 0
+    assert any("需 OCR" in n for n in doc["notes"])

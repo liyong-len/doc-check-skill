@@ -28,14 +28,16 @@ def _numbers(text: str) -> list[str]:
     每个匹配给出两种写法：原样（含单位，如「1,200.00 元」）与裸数字
     （如「1,200.00」）。裸数字便于跨文档比对同一个数值，单位则保留量纲——
     少了它，「1,200 元」与「1,200 万元」在提示里就分不开了。
+
+    尾随的标点不算数字的一部分：「见 12.」的数字是 12，不是 12.。
     """
     out = []
     for m in _NUMBER_RE.finditer(text or ""):
-        token = m.group(0).strip()
-        if not any(ch.isdigit() for ch in token) or len(token) <= 1:
+        token = m.group(0).strip().rstrip(".,，")
+        if len(token) <= 1:
             continue
         out.append(token)
-        number = m.group(1).strip()
+        number = m.group(1).strip().rstrip(".,，")
         if len(number) > 1 and number != token:
             out.append(number)
     return out
@@ -50,12 +52,49 @@ def _block_text(block: dict) -> str:
     return block.get("text", "")
 
 
+def _split_table(block: dict, max_chars: int) -> list[dict]:
+    """把超出上限的表格按行拆成多块。
+
+    xlsx 的一个 sheet 就是一个表格块，几千行的表在 deep 档位下
+    会成为唯一一块超大分片，模型一次读不完。
+    """
+    text = _block_text(block)
+    if len(text) <= max_chars:
+        return [block]
+    rows = block.get("rows") or []
+    if len(rows) < 2:
+        return [block]
+    parts: list[dict] = []
+    current: list[list[dict]] = []
+    size = 0
+    for row in rows:
+        # 行的实际长度含单元格分隔符「 | 」与行分隔符，估算时一并计入，
+        # 否则拆出来的块会比 max_chars 长出一截，deep 档位就名不副实了。
+        row_len = (
+            sum(len(c.get("text", "")) for c in row)
+            + 3 * max(0, len(row) - 1)
+            + 1
+        )
+        if current and size + row_len > max_chars:
+            parts.append({**block, "rows": current})
+            current = []
+            size = 0
+        current.append(row)
+        size += row_len
+    if current:
+        parts.append({**block, "rows": current})
+    return parts
+
+
 def _neighbors(blocks: list[dict], first: int, last: int, window: int) -> dict:
     """分片两侧各取 window 个块的原文，作为跨片衔接的上下文。
 
     邻块取自分片**之外**：分片之前的是 first 之前的块，之后的是 last 之后的块。
     若按分片最后一个块取前邻，前邻就会落在分片内部，既重复分片已有的正文，
     又拿不到真正的前文（多块分片时尤其如此），邻接上下文也就失去了意义。
+
+    blocks 是切分后的块序列（超长表格已按行拆成多块），因此这里的邻块
+    与分片里的块首尾相接，表格拆出来的各段之间也有上下文。
     """
     if window <= 0:
         return {"prev": "", "next": ""}
@@ -75,12 +114,17 @@ def build_chunks(documents: list[dict], depth: str = "standard") -> list[dict]:
 
     chunks: list[dict] = []
     for doc in documents:
-        blocks = doc.get("blocks", [])
+        # 超长表格先按行拆开，否则一个 xlsx sheet 会成为唯一一块超大分片
+        pieces: list[dict] = []
+        for block in doc.get("blocks", []):
+            pieces.extend(_split_table(block, max_chars))
+
         buffer: list[dict] = []
         buf_len = 0
+        buf_start = 0
         seq = 0
 
-        def flush(buffer):
+        def flush():
             nonlocal seq
             if not buffer:
                 return
@@ -103,7 +147,7 @@ def build_chunks(documents: list[dict], depth: str = "standard") -> list[dict]:
                 "text": text,
                 "style": buffer[0].get("style"),
                 "neighbors": _neighbors(
-                    blocks, buffer[0]["index"], buffer[-1]["index"], window
+                    pieces, buf_start, buf_start + len(buffer) - 1, window
                 ),
                 "entities": sorted(set(entities)),
                 "numbers": sorted(set(numbers)),
@@ -112,13 +156,14 @@ def build_chunks(documents: list[dict], depth: str = "standard") -> list[dict]:
             })
             seq += 1
 
-        for block in blocks:
-            text = _block_text(block)
+        for pos, piece in enumerate(pieces):
+            text = _block_text(piece)
             if buf_len and buf_len + len(text) > max_chars:
-                flush(buffer)
+                flush()
                 buffer = []
                 buf_len = 0
-            buffer.append(block)
+                buf_start = pos
+            buffer.append(piece)
             buf_len += len(text) + 1
-        flush(buffer)
+        flush()
     return chunks

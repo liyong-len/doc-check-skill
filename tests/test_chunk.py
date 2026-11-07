@@ -53,3 +53,44 @@ def test_deep_mode_smaller_chunks():
     deep = build_chunks([doc], "deep")
     standard = build_chunks([doc], "standard")
     assert len(deep) > len(standard)
+
+
+def test_build_chunks_neighbors_span_chunk_boundaries():
+    """邻接上下文取自分片之外：前邻是上一分片的末块，后邻是下一分片的首块。"""
+    texts = [f"BLOCK{i:02d}" + "x" * 990 for i in range(9)]
+    doc = _doc("a.docx", texts)
+    chunks = build_chunks([doc], "standard")
+    assert len(chunks) == 3
+    assert chunks[0]["text"].endswith(texts[2])
+    assert chunks[1]["neighbors"]["prev"].endswith(texts[2])
+    assert chunks[2]["text"].startswith(texts[6])
+    assert chunks[1]["neighbors"]["next"].startswith(texts[6])
+
+
+def test_build_chunks_splits_oversized_table():
+    """xlsx 的一个 sheet 就是一个表格块，超长表格必须按行拆开。"""
+    rows = [
+        [{"text": f"单元格{i}-{j}", "style": {}} for j in range(3)]
+        for i in range(200)
+    ]
+    doc = {
+        "file": "b.xlsx", "type": "xlsx", "sha256": "0" * 64, "title": "",
+        "stats": {"paragraphs": 0, "tables": 1, "pages": 1,
+                  "words": 10, "rows": 200, "sheets": 1},
+        "sections": [], "entities": [], "citations": [], "numbers": [],
+        "notes": [],
+        "blocks": [{"index": 0, "kind": "table", "text": "", "rows": rows,
+                    "style": None, "section_path": "报价表"}],
+    }
+    chunks = build_chunks([doc], "deep")
+    assert len(chunks) > 1
+    limit = DEPTH_PARAMS["deep"]["max_chars"]
+    assert all(len(c["text"]) <= limit + 200 for c in chunks)
+
+
+def test_numbers_trim_trailing_punctuation():
+    """「见 12.」的数字是 12，不是 12.。"""
+    doc = _doc("a.docx", ["见 12.，另见 3.5 万元。"])
+    chunk = build_chunks([doc], "standard")[0]
+    assert "12" in chunk["numbers"]
+    assert "12." not in chunk["numbers"]

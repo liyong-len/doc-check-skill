@@ -65,7 +65,9 @@ def extract_pdf(path: Path) -> dict:
         {"font": k[0], "size": k[1], "count": v}
         for k, v in sorted(merged.items(), key=lambda kv: -kv[1])
     ]
-    if pages and all(not b["text"].strip() for b in blocks):
+    if pages == 0:
+        notes.append("PDF 没有页面，无法读取，需 OCR，当前不支持")
+    elif all(not b["text"].strip() for b in blocks):
         notes.append("全文无文本层，疑似扫描件，需 OCR，当前不做内容判定")
 
     return {

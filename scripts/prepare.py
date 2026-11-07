@@ -33,11 +33,9 @@ def _ocr_failure(doc: dict) -> tuple[dict | None, bool]:
         if b.get("kind") == "paragraph"
     )
     reason = "需 OCR，当前不支持。"
-    reason += (
-        "该文档无文本层，未做任何内容判定。"
-        if not has_text
-        else " " + " ".join(notes)
-    )
+    if not has_text:
+        reason += "该文档无文本层，未做任何内容判定。"
+    reason += " " + " ".join(notes)
     return {"file": doc["file"], "path": doc["path"], "reason": reason}, has_text
 
 
@@ -52,7 +50,7 @@ def prepare(files: list[Path], depth: str, work: Path) -> dict:
         if not path.exists():
             failures.append({
                 "file": path.name,
-                "path": str(path),
+                "path": str(path.resolve()),
                 "reason": "文件不存在",
             })
             continue
@@ -85,6 +83,7 @@ def prepare(files: list[Path], depth: str, work: Path) -> dict:
         "documents": len(documents),
         # failures 返回清单本身（不是条数），调用方才能逐条看失败原因。
         "failures": failures,
+        "failure_count": len(failures),
         "chunks": len(chunks),
         "issues": len(consistency.get("issues", [])),
         "work": str(work.resolve()),
@@ -102,11 +101,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     result = prepare([Path(f) for f in args.files], args.depth, Path(args.work))
-    print(f"已抽取 {result['documents']} 份文档，{len(result['failures'])} 份失败")
+    print(f"已抽取 {result['documents']} 份文档，{result['failure_count']} 份失败")
     print(f"确定性检查发现 {result['issues']} 个问题，分片 {result['chunks']} 片")
     print(f"工作目录：{result['work']}")
     if result["failures"]:
         print("未能检查的文件见 manifest.json 的 failures 字段", file=sys.stderr)
+    if result["documents"] == 0 and result["failures"]:
+        return 1  # 一份都没检查成功，调用方必须能察觉
     return 0
 
 
