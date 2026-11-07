@@ -26,21 +26,40 @@ _REGIONS = [
     "重庆", "台湾", "香港", "澳门",
 ]
 
-# 连接词：用于把「本项目由北京华信科技有限公司」中的前缀裁掉
-_CONNECTORS = [
-    "以及", "并且", "联合", "协作", "采购方", "招标人", "招标代理", "甲方", "乙方",
-    "受托", "委托", "由", "是", "与", "和", "及", "向", "为", "对", "给", "经", "从",
-    "同", "并", "或",
+# 连接词分两类。
+#
+# 强连接词是句子层面的标记，其后几乎必然是字号，可以裁掉前缀：
+#   「本项目由北京华信科技有限公司」「甲方及乙方共同委托…」
+#
+# 弱连接词同时也是字号里常见的字——「和而泰」「中国联合」「清华同方」
+# 都是真实字号的一部分。弱连接词单独出现时不能裁，否则真实公司名会被截断
+# （「和而泰智能控制股份有限公司」会被截成「而泰智能控制股份有限公司」）。
+_STRONG_CONNECTORS = [
+    "以及", "并且", "我方", "贵司", "双方", "各方", "甲方", "乙方", "中标人",
+    "投标人", "供应商", "承包人", "采购方", "招标人", "招标代理", "代理",
+    "受托", "委托", "由",
+]
+_WEAK_CONNECTORS = [
+    "联合", "协作", "为", "和", "同", "经", "并", "及", "与", "是", "从",
+    "给", "向", "对", "或",
 ]
 
 # 裁剪后至少要剩下的字号长度。太短说明连接词本身是字号的一部分
 # （「华为技术」中的「为」），此时不裁剪。
 _MIN_PREFIX_LEN = 4
 
+# 纯行业词，不能单独作为字号。出现「科技有限公司」这种名字说明是切错了。
+_NON_NAME_WORDS = {
+    "科技", "技术", "信息", "网络", "发展", "建设", "投资", "贸易", "工程",
+}
+
+# 括号组整体进入字号：括号里的「集团」是字号的一部分，不能当成公司词尾，
+# 否则「北京华信(集团)有限公司」会被切成「北京华信(集团」。
+_PAREN_GROUP = r"(?:\([^()]*\)|（[^（）]*）)"
+
 _NAME_RE = re.compile(
-    r"(?P<pre>[一-龥A-Za-z0-9·]{2,30}?)"
-    # 词尾取自 _SUFFIXES，避免形式词清单与匹配正则各写一份而互相走偏
-    r"(?P<suf>" + "|".join(_SUFFIXES) + ")"
+    r"(?P<pre>(?:[一-龥A-Za-z0-9·]|" + _PAREN_GROUP + r"){2,30}?)"
+    r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
 
 
@@ -60,31 +79,62 @@ def _is_form_fragment(prefix: str) -> bool:
     return False
 
 
+def _strip_unbalanced_parens(name: str) -> str:
+    """去掉不成对的括号。
+
+    括号被纳入字号字符类后，「（北京华信科技有限公司）」会切出
+    「（北京华信科技有限公司」，尾部括号留在名字外面。
+    """
+    for op, cl in (("(", ")"), ("（", "）")):
+        while name.startswith(op) and cl not in name:
+            name = name[1:]
+        while name.endswith(cl) and op not in name:
+            name = name[:-1]
+    return name
+
+
+def _starts_with_region(text: str) -> bool:
+    """是否以行政区划开头。"""
+    return any(text.startswith(r) for r in _REGIONS)
+
+
 def _trim_prefix(prefix: str) -> str:
     """切掉前缀中的连接词，取最短的合格切分作为字号主体。
 
     枚举每个连接词的出现位置，切掉它及其之前的部分，在长度不小于
     _MIN_PREFIX_LEN 的候选中取最短的一个——也就是最靠后的那个连接词，
-    同时跳过切完太短的候选。长度都不合格时完全不裁剪：
-    连接词本身可能是字号的一部分（「华为技术」中的「为」）。
+    同时跳过切完太短的候选。长度都不合格时完全不裁剪。
 
-    取最短而非最长，是因为候选长度随连接词位置右移而变短，
-    取最长等于取最早的连接词，会把「由甲方及乙方共同委托」这样的句子碎片带进名字。
+    强连接词后面几乎必然是字号，可以直接裁。弱连接词同时也是字号的一部分
+    （「和而泰」「中国联合」「清华同方」），只有当其后紧跟行政区划时才裁：
+    以行政区划开头的主体名几乎必然是真正的主体名，
+    这样「联合北京华信科技有限责任公司」能裁掉「联合」，
+    而「和而泰智能控制」「中国联合网络通信集团」不会被裁。
     """
     best = None
-    for conn in _CONNECTORS:
-        start = 0
-        while True:
-            idx = prefix.find(conn, start)
-            if idx < 0:
-                break
-            candidate = prefix[idx + len(conn):].strip()
-            if len(candidate) >= _MIN_PREFIX_LEN:
-                if best is None or len(candidate) < len(best):
-                    best = candidate
-            start = idx + 1
+    for conn in _STRONG_CONNECTORS:
+        best = _best_cut(prefix, conn, best, require_region=False)
+    for conn in _WEAK_CONNECTORS:
+        best = _best_cut(prefix, conn, best, require_region=True)
     if best is None:
         return prefix.strip()
+    return best
+
+
+def _best_cut(prefix: str, conn: str, best: str | None, require_region: bool) -> str | None:
+    """在 conn 的所有出现位置上切分，返回目前最短的合格候选。"""
+    start = 0
+    while True:
+        idx = prefix.find(conn, start)
+        if idx < 0:
+            break
+        candidate = prefix[idx + len(conn):].strip()
+        if len(candidate) >= _MIN_PREFIX_LEN:
+            if require_region and not _starts_with_region(candidate):
+                pass  # 弱连接词后面不是行政区划，保留原字号
+            elif best is None or len(candidate) < len(best):
+                best = candidate
+        start = idx + 1
     return best
 
 
@@ -96,9 +146,9 @@ def extract_company_names(text: str) -> list[str]:
         prefix = _trim_prefix(m.group("pre"))
         if len(prefix) < 2:
             continue
-        if _is_form_fragment(prefix):
+        if _is_form_fragment(prefix) or prefix in _NON_NAME_WORDS:
             continue
-        name = prefix + m.group("suf")
+        name = _strip_unbalanced_parens(prefix + m.group("suf"))
         key = normalize_name(name)
         if key in seen:
             continue
@@ -133,32 +183,98 @@ def core_key(name: str) -> str:
     return n
 
 
+def _strip_leading_weak(core: str) -> str:
+    """去掉字号开头的弱连接词。"""
+    changed = True
+    while changed and core:
+        changed = False
+        for w in _WEAK_CONNECTORS:
+            if core.startswith(w) and len(core) > len(w):
+                core = core[len(w):]
+                changed = True
+                break
+    return core
+
+
+def canonical_core(name: str) -> str:
+    """主体标识：去掉公司词尾，再去掉开头的弱连接词。
+
+    「与上海远大信息技术有限公司」与「上海远大信息技术有限公司」
+    的 canonical_core 相同，判定混主体时不能算成两个主体。
+
+    行政区划保留（「上海远大信息技术」而不是「远大信息技术」）：
+    混主体检查要比的就是「是不是同一家」，北京与上海同名不是同一家。
+    少了行政区划，两家不同城市的同名企业会被并成一个主体。
+    """
+    n = normalize_name(name)
+    n = _strip_suffix(n)
+    return _strip_leading_weak(n)
+
+
+def canonical_name(name: str) -> str:
+    """同一主体的规范写法：去掉开头的弱连接词。"""
+    for s in _SUFFIXES:
+        if name.endswith(s):
+            return _strip_leading_weak(name[: -len(s)]) + s
+    return _strip_leading_weak(name)
+
+
 def same_entity(a: str, b: str) -> bool:
-    """两个名称是否指向同一主体。"""
-    ca, cb = core_key(a), core_key(b)
+    """两个名称是否指向同一主体。
+
+    主要用**后缀**关系判定：核心字号互为后缀即视为同一主体。
+    前缀关系会误并「中国建筑」与「中国建筑科技」这两个不同主体，
+    后缀关系则能把带连接词前缀的同一主体（「由北京华信科技」）
+    与干净写法归到一起。
+
+    简称（「北京华信」之于「北京华信科技有限公司」）是前缀关系，
+    只在两种情况下认可：短字号本身以行政区划开头，
+    或短字号短到只剩两个字（「华为」之于「华为技术」）。
+    其余前缀关系一律不认，避免把「中国建筑」与「中国建筑科技」并成一个主体。
+    """
+    ca, cb = canonical_core(a), canonical_core(b)
     if not ca or not cb:
         return False
     if ca == cb:
         return True
     shorter, longer = sorted([ca, cb], key=len)
-    # 简称下限为 2 个汉字：「北京华信」的核心字号是「华信」，应与「北京华信科技
-    # 有限公司」判为同一主体。下限再低会命中「北京」这类纯行政区划（其核心字号
-    # 为空，已在上一步排除）。
-    if len(shorter) >= 2 and longer.startswith(shorter):
+    if len(shorter) >= 2 and longer.endswith(shorter):
+        return True
+    if longer.startswith(shorter) and (
+        _starts_with_region(shorter) or len(shorter) <= 3
+    ):
         return True
     return False
 
 
 def group_variants(names: list[str]) -> list[dict]:
-    """按核心字号聚类。返回 [{core, names}]，names 按首次出现排序。"""
+    """按主体聚类。
+
+    返回 [{core, names, canonicals}]：
+    - names      该主体的原始写法，按首次出现排序
+    - canonicals 去掉弱连接词前缀后的写法集合。同一写法只算一种，
+                 用来判断「同一主体是否出现了多种写法」——
+                 「与上海远大信息技术有限公司」和「上海远大信息技术有限公司」
+                 规范写法相同，不算两种写法
+    - core       成员中最长的核心字号
+    """
     groups: list[dict] = []
     for name in names:
         placed = False
         for g in groups:
             if same_entity(name, g["names"][0]):
                 g["names"].append(name)
+                canon = canonical_name(name)
+                if canon not in g["canonicals"]:
+                    g["canonicals"].append(canon)
                 placed = True
                 break
         if not placed:
-            groups.append({"core": core_key(name), "names": [name]})
+            groups.append({
+                "core": core_key(name),
+                "names": [name],
+                "canonicals": [canonical_name(name)],
+            })
+    for g in groups:
+        g["core"] = max((core_key(n) for n in g["names"]), key=len)
     return groups

@@ -1,4 +1,5 @@
 from entities import (
+    canonical_core,
     core_key,
     extract_company_names,
     group_variants,
@@ -52,13 +53,6 @@ def test_form_fragment_guard_keeps_equal_length_names():
     assert extract_company_names("中信建设集团股份有限公司") == ["中信建设集团"]
 
 
-def test_extract_company_names_skips_split_form_word():
-    # 「股份有限公司」不是主体名，是形式词被从中间切开的结果
-    names = extract_company_names("中标候选人：中信建设集团股份有限公司")
-    assert "股份有限公司" not in names
-    assert "中信建设集团" in names
-
-
 def test_core_key_strips_suffix_and_region():
     assert core_key("北京华信科技有限公司") == "华信科技"
     assert core_key("华信科技有限公司") == "华信科技"
@@ -85,3 +79,46 @@ def test_group_variants_clusters_by_core():
     assert sizes == [1, 2]
     two = next(g for g in groups if len(g["names"]) == 2)
     assert set(two["names"]) == {"北京华信科技有限公司", "北京华信科技有限责任公司"}
+
+
+def test_weak_connector_characters_inside_names_are_preserved():
+    assert extract_company_names("和而泰智能控制股份有限公司") == ["和而泰智能控制股份有限公司"]
+    assert extract_company_names("中国联合网络通信集团有限公司") == ["中国联合网络通信集团有限公司"]
+    assert extract_company_names("清华同方能源环保股份有限公司") == ["清华同方能源环保股份有限公司"]
+
+
+def test_same_entity_uses_suffix_not_prefix():
+    # 带连接词前缀的同一写法与干净写法同属一个主体
+    assert same_entity("由北京华信科技有限公司", "北京华信科技有限公司")
+    # 前缀关系会误并这两个不同主体
+    assert not same_entity("中国建筑", "中国建筑科技")
+    assert not same_entity("华信科技有限公司", "华信科技信息有限公司")
+
+
+def test_parentheses_in_company_names():
+    assert extract_company_names("北京华信(集团)有限公司") == ["北京华信(集团)有限公司"]
+    assert extract_company_names("北京华信（集团）科技有限公司") == ["北京华信（集团）科技有限公司"]
+    assert extract_company_names("（北京华信科技有限公司）") == ["北京华信科技有限公司"]
+
+
+def test_group_variants_keeps_distinct_cores_apart():
+    groups = group_variants(["华信科技有限公司", "华信科技信息有限公司"])
+    assert len(groups) == 2
+
+
+def test_group_variants_canonicals_ignore_leading_weak_connector():
+    groups = group_variants(["与上海远大信息技术有限公司", "上海远大信息技术有限公司"])
+    assert len(groups) == 1
+    assert groups[0]["canonicals"] == ["上海远大信息技术有限公司"]
+
+
+def test_canonical_core_collapses_weak_prefix():
+    assert canonical_core("与上海远大信息技术有限公司") == "上海远大信息技术"
+    assert canonical_core("上海远大信息技术有限公司") == "上海远大信息技术"
+
+
+def test_extract_company_names_skips_split_form_word():
+    # 「股份有限公司」不是主体名，是形式词被从中间切开的结果
+    names = extract_company_names("中标候选人：中信建设集团股份有限公司")
+    assert "股份有限公司" not in names
+    assert "中信建设集团" in names
