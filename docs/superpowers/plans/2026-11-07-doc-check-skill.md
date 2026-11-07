@@ -2529,10 +2529,15 @@ def _text_blocks(documents):
 
 
 def _classify(text, patterns):
-    """返回匹配到的体系名。patterns 的元素为 (label, regex) 或 (label, regex, depth)。"""
+    """返回匹配到的体系名。patterns 的元素为 (label, regex) 或 (label, regex, depth)。
+
+    用 search 而非 match：图表题注与引用标记常出现在句子中间
+    （「如图1-1所示」），锚在行首会让这两条规则永远不触发。
+    标题规则自带 ^，search 对它们仍然等价于行首匹配。
+    """
     for item in patterns:
         label, rx = item[0], item[1]
-        if rx.match(text.strip()):
+        if rx.search(text.strip()):
             return label
     return None
 
@@ -2540,7 +2545,7 @@ def _classify(text, patterns):
 def _classify_depth(text, patterns):
     """返回 (体系名, 隐含层级)。patterns 元素为 (label, regex, depth)。"""
     for label, rx, depth in patterns:
-        if rx.match(text.strip()):
+        if rx.search(text.strip()):
             return label, depth
     return None, None
 
@@ -3008,6 +3013,8 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
     issues: list[dict] = []
     names: dict[str, dict] = {}
     per_file: dict[str, list[str]] = {}
+    all_names: list[str] = []
+    seen_names: set[str] = set()
 
     for doc in documents:
         found: list[str] = []
@@ -3015,6 +3022,9 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
             found.extend(extract_company_names(b.get("text", "")))
         per_file[doc["file"]] = found
         for name in found:
+            if name not in seen_names:
+                seen_names.add(name)
+                all_names.append(name)
             key = canonical_core(name)
             if key not in names:
                 names[key] = {"name": name, "core": key, "count": 0, "files": []}
@@ -3022,7 +3032,10 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
             if doc["file"] not in names[key]["files"]:
                 names[key]["files"].append(doc["file"])
 
-    variants = group_variants([n["name"] for n in names.values()])
+    # 变体聚类必须基于全部原始写法，不能基于按主体标识归并后的名单：
+    # 「北京华信科技有限公司」与「北京华信科技有限责任公司」的主体标识相同，
+    # 归并后只剩一个名字，写法不统一就再也查不出来了。
+    variants = group_variants(all_names)
 
     for group in variants:
         writings = group.get("canonicals") or group["names"]
