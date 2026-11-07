@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import normalize_text
+from common import force_utf8_stdio, normalize_text
 
 
 def _key(item: dict) -> str:
@@ -38,6 +38,21 @@ def _group(items: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
+def _stable_key(item: dict) -> tuple:
+    """配对时的稳定排序键。
+
+    配对结果不能取决于输入顺序：金标里没写 severity 的条目配上哪一条预测，
+    按列表顺序取第一条就成了「谁排在前面谁被认」。同一批内容换个顺序进来，
+    指标就变，这是评测工具自己制造出来的噪声。
+    """
+    return (
+        str(item.get("severity") or ""),
+        normalize_text(str(item.get("quote") or "")),
+        str(item.get("description") or ""),
+        str(item.get("suggestion") or ""),
+    )
+
+
 def _pair(gold_items: list[dict], pred_items: list[dict]):
     """把同一匹配键下的金标与预测配对。
 
@@ -46,19 +61,15 @@ def _pair(gold_items: list[dict], pred_items: list[dict]):
     先配 severity 相同的那一对：同一个匹配键下金标可能有多条且级别不同
     （同一处问题定过不同的级），按顺序硬配会把「级别相同」的那条判成级别不符。
     金标没写 severity 时不判级别——能配上就算干净命中。
+
+    两边都先按内容排序再配对：配对结果与输入顺序无关。
     """
-    remaining = list(pred_items)
+    gold = sorted(gold_items, key=_stable_key)
+    remaining = sorted(pred_items, key=_stable_key)
     unmatched_gold: list[dict] = []
     matched = 0
 
-    for g in gold_items:
-        if not g.get("severity"):
-            if remaining:
-                remaining.pop(0)
-                matched += 1
-            else:
-                unmatched_gold.append(g)
-            continue
+    for g in [x for x in gold if x.get("severity")]:
         idx = next(
             (i for i, p in enumerate(remaining)
              if p.get("severity") == g.get("severity")),
@@ -69,6 +80,13 @@ def _pair(gold_items: list[dict], pred_items: list[dict]):
             continue
         remaining.pop(idx)
         matched += 1
+
+    for g in [x for x in gold if not x.get("severity")]:
+        if remaining:
+            remaining.pop(0)
+            matched += 1
+        else:
+            unmatched_gold.append(g)
 
     severity_mismatch: list[dict] = []
     pairs = min(len(unmatched_gold), len(remaining))
@@ -138,6 +156,7 @@ def main(argv=None) -> int:
     parser.add_argument("--predicted", required=True, help="模型输出 findings.json 路径")
     args = parser.parse_args(argv)
 
+    force_utf8_stdio()
     gold = json.loads(Path(args.gold).read_text(encoding="utf-8"))
     gold_items = gold["items"] if isinstance(gold, dict) else gold
     predicted = json.loads(Path(args.predicted).read_text(encoding="utf-8"))

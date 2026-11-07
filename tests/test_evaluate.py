@@ -153,6 +153,24 @@ def test_evaluate_prefers_same_severity_when_pairing():
     assert r["recall"] == 0.5
 
 
+def test_evaluate_pairing_does_not_depend_on_order():
+    """金标没写 severity 时配哪一条预测，不能由列表顺序决定。
+
+    按顺序取第一条就变成「谁排在前面谁被认」：同一批内容换个顺序进来，
+    指标就变，评测工具自己制造出了噪声。
+    """
+    gold = [_g(), _g(severity="P1")]
+    pred = [_p(severity="P1"), _p(severity="P2")]
+    r1 = evaluate(gold, pred)
+    r2 = evaluate(list(reversed(gold)), list(reversed(pred)))
+    assert r1 == r2
+    # 级别相同的那一条先配上，另一条金标再配剩下的预测
+    assert r1["matched"] == 2
+    assert r1["severity_mismatch"] == []
+    assert r1["missing"] == []
+    assert r1["false_positives"] == []
+
+
 # --- 命令行 ---
 
 
