@@ -13,7 +13,7 @@
 
 抽取文档后由脚本做机械比对，只看文档内部，不引用任何外部依据：
 
-字体与字号一致性、段落格式一致性（对齐/缩进/行距/段间距）、标题层级体例、
+字体一致性、段落格式一致性（对齐/缩进/行距/段间距）、标题层级体例、
 图表题注体例、表格体例、列表与编号、引用标记、数字与单位（货币单位、日期格式）、
 主体名称（写法一致性）、主体串写（疑似混主体）、术语与缩写。
 
@@ -86,7 +86,12 @@ python scripts/check_env.py
 在已装技能的智能体里说「检查这几个文档」并给出文件路径；
 Claude Code 与 Codex CLI 还可以直接用 `/doc-check`。
 
-命令行手工跑是三段式，中间那一步由智能体（或你）完成：
+命令行手工跑是三段式，中间那一步由智能体（或你）完成。
+
+命令里的 `python` 必须是**装了四个依赖的那个解释器**：安装器建好的虚拟环境在仓库根目录的
+`.venv` 里（Windows 是 `.venv\Scripts\python.exe`，macOS / Linux 是 `.venv/bin/python`）；
+每个已安装的技能目录里还有 `python-path.txt`，写的就是它的绝对路径。
+系统里没装 `python-docx` 的 `python` 会直接 ImportError。
 
 ```bash
 # ① 抽取与确定性检查
@@ -134,8 +139,8 @@ tests/              单元测试、端到端测试、样本生成、金标评估
 ## 开发
 
 ```bash
-python -m pytest -v
-python tests/make_samples.py
+python -m pytest -v          # 用 .venv 里的解释器
+python tests/make_samples.py # 重新生成 tests/samples/ 下的样本
 ```
 
 模型层不进 CI（输出有不确定性）。评估方法：准备一批人工标注的样本文档，

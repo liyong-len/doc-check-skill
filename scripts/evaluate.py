@@ -30,25 +30,103 @@ def _key(item: dict) -> str:
     ])
 
 
+def _group(items: list[dict]) -> dict[str, list[dict]]:
+    """按匹配键分组，保留出现顺序与重复条目。"""
+    groups: dict[str, list[dict]] = {}
+    for item in items:
+        groups.setdefault(_key(item), []).append(item)
+    return groups
+
+
+def _pair(gold_items: list[dict], pred_items: list[dict]):
+    """把同一匹配键下的金标与预测配对。
+
+    返回 (干净命中数, 级别不符列表, 漏报列表, 多余预测列表)。
+
+    先配 severity 相同的那一对：同一个匹配键下金标可能有多条且级别不同
+    （同一处问题定过不同的级），按顺序硬配会把「级别相同」的那条判成级别不符。
+    金标没写 severity 时不判级别——能配上就算干净命中。
+    """
+    remaining = list(pred_items)
+    unmatched_gold: list[dict] = []
+    matched = 0
+
+    for g in gold_items:
+        if not g.get("severity"):
+            if remaining:
+                remaining.pop(0)
+                matched += 1
+            else:
+                unmatched_gold.append(g)
+            continue
+        idx = next(
+            (i for i, p in enumerate(remaining)
+             if p.get("severity") == g.get("severity")),
+            None,
+        )
+        if idx is None:
+            unmatched_gold.append(g)
+            continue
+        remaining.pop(idx)
+        matched += 1
+
+    severity_mismatch: list[dict] = []
+    pairs = min(len(unmatched_gold), len(remaining))
+    for i in range(pairs):
+        severity_mismatch.append(
+            {"gold": unmatched_gold[i], "predicted": remaining[i]}
+        )
+    return (
+        matched,
+        severity_mismatch,
+        unmatched_gold[pairs:],
+        remaining[pairs:],
+    )
+
+
 def evaluate(gold: list[dict], predicted: list[dict]) -> dict:
-    """比对金标与模型输出，返回召回率、精确率与漏报、误报清单。"""
-    gold_map = {_key(g): g for g in gold}
-    pred_map = {_key(p): p for p in predicted}
+    """比对金标与模型输出，返回召回率、精确率与各类明细。
 
-    matched = [k for k in gold_map if k in pred_map]
-    missing = [gold_map[k] for k in gold_map if k not in pred_map]
-    false_positives = [pred_map[k] for k in pred_map if k not in gold_map]
+    计数按**原始条目数**，不去重：同一处问题被模型报了三次，就是三条预测，
+    三条都进分母，多的两条进误报清单。去重计数会让「重复报三遍」与
+    「报一遍」得到同一个精确率——指标看不见这种退化，输出却写着 100%。
 
-    gold_total = len(gold_map)
-    pred_total = len(pred_map)
-    recall = len(matched) / gold_total if gold_total else 1.0
-    precision = len(matched) / pred_total if pred_total else 0.0
+    匹配键相同但 severity 不同的，算「级别不符」：问题找对了，定级错了，
+    不算干净命中，但也不算漏报，单列出来。
+    """
+    gold_groups = _group(gold)
+    pred_groups = _group(predicted)
+
+    matched = 0
+    severity_mismatch: list[dict] = []
+    missing: list[dict] = []
+    false_positives: list[dict] = []
+
+    for key, gold_items in gold_groups.items():
+        hit, mismatch, missed, extra = _pair(
+            gold_items, pred_groups.get(key, [])
+        )
+        matched += hit
+        severity_mismatch.extend(mismatch)
+        missing.extend(missed)
+        false_positives.extend(extra)
+
+    for key, pred_items in pred_groups.items():
+        if key not in gold_groups:
+            false_positives.extend(pred_items)
+
+    gold_total = len(gold)
+    pred_total = len(predicted)
+    found = matched + len(severity_mismatch)
+    recall = found / gold_total if gold_total else 1.0
+    precision = found / pred_total if pred_total else 0.0
     return {
         "recall": round(recall, 4),
         "precision": round(precision, 4),
-        "matched": len(matched),
+        "matched": matched,
         "gold_total": gold_total,
         "predicted_total": pred_total,
+        "severity_mismatch": severity_mismatch,
         "missing": missing,
         "false_positives": false_positives,
     }
@@ -66,12 +144,21 @@ def main(argv=None) -> int:
     predicted_items = predicted["findings"] if isinstance(predicted, dict) else predicted
 
     r = evaluate(gold_items, predicted_items)
-    print(f"召回率：{r['recall']:.2%}（命中 {r['matched']}/{r['gold_total']}）")
-    print(f"精确率：{r['precision']:.2%}（{r['matched']}/{r['predicted_total']}）")
+    mismatch = r["severity_mismatch"]
+    found = r["matched"] + len(mismatch)
+    print(f"召回率：{r['recall']:.2%}（找到 {found}/{r['gold_total']} 条问题："
+          f"干净命中 {r['matched']}、级别不符 {len(mismatch)}）")
+    print(f"精确率：{r['precision']:.2%}（{found}/{r['predicted_total']}）")
     if r["missing"]:
         print("\n漏报：")
         for m in r["missing"]:
             print(f"  - [{m.get('category')}] {m.get('file')}：{m.get('quote')}")
+    if mismatch:
+        print("\n级别不符（问题找对了，定级与金标不一致）：")
+        for m in mismatch:
+            g, p = m["gold"], m["predicted"]
+            print(f"  - [{g.get('category')}] {g.get('file')}：{g.get('quote')}"
+                  f"（金标 {g.get('severity')} / 模型 {p.get('severity')}）")
     if r["false_positives"]:
         print("\n误报：")
         for f in r["false_positives"]:

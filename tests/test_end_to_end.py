@@ -13,6 +13,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = Path(__file__).resolve().parent / "samples"
 
+SAMPLE_FILES = [
+    SAMPLES / "sample_company.docx",
+    SAMPLES / "sample_price.xlsx",
+    SAMPLES / "sample_note.md",
+]
+
+# 阶段②（智能体产物）在测试里的替身。
+# locator 指向样本里的真实位置：「本项目工期为 90 日历天。」是第 12 段（0 起），
+# 在「第一章 投标文件 / 技术方案」之下。
+FINDING = {
+    "id": "e" * 16, "severity": "P1", "category": "前后矛盾",
+    "detector": "llm", "confidence": "疑似 · 需人工核实",
+    "file": "sample_company.docx",
+    "locator": {"type": "paragraph", "index": 12,
+                "section_path": "第一章 投标文件/技术方案"},
+    "quote": "本项目工期为 90 日历天。",
+    "description": "与前文 60 日历天矛盾",
+    "suggestion": "统一为 60 日历天",
+}
+
 
 def _ensure_samples():
     if not (SAMPLES / "sample_company.docx").exists():
@@ -22,45 +42,74 @@ def _ensure_samples():
         )
 
 
-def test_end_to_end_pipeline(tmp_path):
-    _ensure_samples()
+def _prepare(tmp_path, files=None):
+    """跑阶段①，返回工作目录与结果。"""
     from prepare import prepare
-    from render import render
 
     work = tmp_path / "work"
+    result = prepare(files if files is not None else SAMPLE_FILES, "standard", work)
+    return work, result
+
+
+def test_end_to_end_pipeline(tmp_path):
+    _ensure_samples()
+    from render import render
+
+    work, result = _prepare(tmp_path)
     out = tmp_path / "report.html"
-    files = [
-        SAMPLES / "sample_company.docx",
-        SAMPLES / "sample_price.xlsx",
-        SAMPLES / "sample_note.md",
-    ]
-    result = prepare(files, "standard", work)
     assert result["documents"] == 3
     # prepare 返回的 failures 是清单本身（不是条数），空清单才算没有失败项。
     assert result["failures"] == []
     assert result["failure_count"] == 0
 
-    findings = [
-        {
-            "id": "e" * 16, "severity": "P1", "category": "前后矛盾",
-            "detector": "llm", "confidence": "疑似 · 需人工核实",
-            "file": "sample_company.docx",
-            "locator": {"type": "paragraph", "index": 5, "section_path": "技术方案"},
-            "quote": "本项目工期为 90 日历天。",
-            "description": "与前文 60 日历天矛盾",
-            "suggestion": "统一为 60 日历天",
-        }
-    ]
     (work / "findings.json").write_text(
-        json.dumps(findings, ensure_ascii=False), encoding="utf-8"
+        json.dumps([FINDING], ensure_ascii=False), encoding="utf-8"
     )
 
     render(work, out)
     html = out.read_text(encoding="utf-8")
+
     assert "文档检查报告" in html
-    assert "前后矛盾" in html
+    # 能力边界声明是报告规范的要求（references/report-spec.md）。
     assert "未核实外部事实" in html
+
+    # 断言必须打在「只有这条 finding 才有」的文字上。
+    # 「文档检查报告」是静态标题，「前后矛盾」是 §7 规则表里的一行，
+    # 「未核实外部事实」在静态页脚里——finding 被整个丢掉时它们照样在，
+    # 断言它们等于没断言。
+    assert FINDING["description"] in html
+    assert FINDING["suggestion"] in html
+    # §3 按文件明细里的类别小标题带条数，只有这条 finding 在时才是「前后矛盾（1）」。
+    # 光断言「前后矛盾」没有用：§7 规则表里那一行恒在。
+    assert "前后矛盾（1）" in html
+    # 引文本身不能当证据：确定性层的字体偏离报的是同一段文字，
+    # 同一个引文在没有这条 finding 时也在报告里。负对照见下一个测试。
+    assert FINDING["quote"] in html
+
     assert (work / "last-findings.json").exists()
+
+
+def test_end_to_end_report_drops_finding_when_findings_empty(tmp_path):
+    """负对照：findings.json 为空时，这条 finding 的文字必须从报告里消失。
+
+    没有这条对照，正向断言仍然分不清「finding 真的进了报告」与
+    「同样的字恰好在静态模板或别的检查项里」。
+    """
+    _ensure_samples()
+    from render import render
+
+    work, _ = _prepare(tmp_path)
+    out = tmp_path / "report.html"
+    (work / "findings.json").write_text("[]", encoding="utf-8")
+
+    render(work, out)
+    html = out.read_text(encoding="utf-8")
+
+    assert FINDING["description"] not in html
+    assert FINDING["suggestion"] not in html
+    assert "前后矛盾（1）" not in html
+    # 确定性层的结论仍在：报告不是空的，只是少了模型侧的条目
+    assert "字体一致性" in html
 
 
 def test_end_to_end_catches_known_defects(tmp_path):
