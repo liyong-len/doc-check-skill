@@ -118,6 +118,20 @@ def test_paren_group_is_consumed_atomically():
     assert extract_company_names("（北京华信科技有限公司）") == ["北京华信科技有限公司"]
 
 
+def test_org_form_suffix_is_not_stripped():
+    # 研究院/设计院不是企业形式，剥掉会把不同主体并到一起
+    assert canonical_core("中国建筑设计院有限公司") == "中国建筑设计院"
+    assert canonical_core("中国建筑设计院") == "中国建筑设计院"
+    assert canonical_core("中国建筑有限公司") == "中国建筑"
+
+
+def test_organization_connectors_are_not_stripped_from_canonical():
+    # 同/和/联合/协作在字号里太常见，不能剥
+    assert canonical_core("联合网络通信有限公司") == "联合网络通信"
+    assert canonical_core("和信科技有限公司") == "和信科技"
+    assert canonical_core("同创股份有限公司") == "同创"
+
+
 def test_extract_company_names_skips_split_form_word():
     # 「股份有限公司」不是主体名，是形式词被从中间切开的结果
     names = extract_company_names("中标候选人：中信建设集团股份有限公司")
