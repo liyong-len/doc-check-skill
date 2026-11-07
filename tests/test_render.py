@@ -1,6 +1,6 @@
 import json
 
-from render import build_html
+from render import build_html, render
 
 
 def _consistency():
@@ -56,6 +56,23 @@ def _manifest():
             {"file": "b.pdf", "path": "b.pdf", "reason": "需 OCR，当前不支持"},
         ],
     }
+
+
+def _write_work(tmp_path, *, findings=None, consistency=None, manifest=None):
+    """造一个阶段①的工作目录。findings=None 表示不写 findings.json。"""
+    work = tmp_path / "work"
+    work.mkdir(exist_ok=True)
+    (work / "manifest.json").write_text(
+        json.dumps(manifest or _manifest(), ensure_ascii=False), encoding="utf-8"
+    )
+    (work / "consistency.json").write_text(
+        json.dumps(consistency or _consistency(), ensure_ascii=False), encoding="utf-8"
+    )
+    if findings is not None:
+        (work / "findings.json").write_text(
+            json.dumps(findings, ensure_ascii=False), encoding="utf-8"
+        )
+    return work
 
 
 def test_build_html_contains_core_sections():
@@ -136,3 +153,149 @@ def test_build_html_escapes_locator_text():
     })
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+def test_build_html_severity_total_matches_displayed_counts():
+    """非法 severity 不得让 banner 总数超过逐级之和。"""
+    html = build_html({
+        "manifest": _manifest(),
+        "consistency": {"style_profile": {}, "issues": [], "entities": {}, "stats": {}},
+        "findings": [
+            {"id": "f" * 16, "severity": "P0", "category": "前后矛盾",
+             "detector": "llm", "confidence": "确定", "file": "a.docx",
+             "locator": {"type": "file"}, "quote": "正文",
+             "description": "描述", "suggestion": "建议"},
+            {"id": "g" * 16, "severity": "P9", "category": "前后矛盾",
+             "detector": "llm", "confidence": "确定", "file": "a.docx",
+             "locator": {"type": "file"}, "quote": "另段",
+             "description": "描述", "suggestion": "建议"},
+        ],
+        "baseline_diff": None,
+    })
+    assert "共 2 个问题" in html
+    assert "P0 1 ｜ P1 0 ｜ P2 0 ｜ P3 1" in html
+
+
+def test_render_writes_report_and_baseline_file(tmp_path):
+    work = _write_work(tmp_path, findings=_findings())
+    out = tmp_path / "report.html"
+    render(work, out)
+    assert out.exists()
+    baseline = work / "last-findings.json"
+    assert baseline.exists()
+    data = json.loads(baseline.read_text(encoding="utf-8"))
+    assert len(data["findings"]) == 1
+    assert "issues" in data
+
+
+def test_render_baseline_covers_deterministic_layer(tmp_path):
+    """确定性层的问题也进基线，复查时才算得进「新增」。"""
+    work = _write_work(tmp_path)
+    render(work, tmp_path / "r1.html")
+    baseline = json.loads((work / "last-findings.json").read_text(encoding="utf-8"))
+    assert len(baseline["issues"]) == 1
+    assert baseline["findings"] == []
+
+    cons = _consistency()
+    cons["issues"].append({
+        "id": "h" * 16, "severity": "P0", "category": "主体串写",
+        "detector": "deterministic", "confidence": "疑似 · 需人工核实",
+        "file": "a.docx", "locator": {"type": "file"},
+        "quote": "上海远大信息技术有限公司",
+        "description": "出现第三个主体", "suggestion": "确认归属",
+    })
+    (work / "consistency.json").write_text(
+        json.dumps(cons, ensure_ascii=False), encoding="utf-8"
+    )
+    render(work, tmp_path / "r2.html", baseline=work / "last-findings.json")
+    html = (tmp_path / "r2.html").read_text(encoding="utf-8")
+    assert "复查对比" in html
+    assert "新增问题（1）" in html
+
+
+def test_render_tolerates_missing_findings_file(tmp_path):
+    work = _write_work(tmp_path)
+    out = tmp_path / "report.html"
+    render(work, out)
+    assert out.exists()
+    data = json.loads((work / "last-findings.json").read_text(encoding="utf-8"))
+    assert data["findings"] == []
+
+
+def test_render_rejects_malformed_findings_file(tmp_path, capsys):
+    work = _write_work(tmp_path)
+    (work / "findings.json").write_text("{不是合法 JSON", encoding="utf-8")
+    out = tmp_path / "report.html"
+    try:
+        render(work, out)
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("非法 findings.json 应当以退出码 2 结束")
+    assert not out.exists()
+    assert "findings.json" in capsys.readouterr().err
+
+
+def test_render_rejects_schema_invalid_findings_file(tmp_path):
+    work = _write_work(tmp_path, findings=[{"id": "x", "severity": "P0"}])
+    out = tmp_path / "report.html"
+    try:
+        render(work, out)
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("不合法的 finding 应当以退出码 2 结束")
+    assert not out.exists()
+
+
+def test_render_reports_missing_manifest(tmp_path, capsys):
+    work = tmp_path / "work"
+    work.mkdir()
+    try:
+        render(work, tmp_path / "report.html")
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("缺少 manifest.json 应当以退出码 2 结束")
+    err = capsys.readouterr().err
+    assert "manifest.json" in err
+    assert "prepare.py" in err
+
+
+def test_render_reports_missing_consistency(tmp_path, capsys):
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "manifest.json").write_text(
+        json.dumps(_manifest(), ensure_ascii=False), encoding="utf-8"
+    )
+    try:
+        render(work, tmp_path / "report.html")
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("缺少 consistency.json 应当以退出码 2 结束")
+    assert "consistency.json" in capsys.readouterr().err
+
+
+def test_render_reports_non_dict_manifest(tmp_path, capsys):
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "manifest.json").write_text("[1, 2]", encoding="utf-8")
+    try:
+        render(work, tmp_path / "report.html")
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("manifest.json 不是对象时应当以退出码 2 结束")
+    assert "JSON 对象" in capsys.readouterr().err
+
+
+def test_render_reports_missing_baseline(tmp_path, capsys):
+    work = _write_work(tmp_path)
+    try:
+        render(work, tmp_path / "report.html", baseline=tmp_path / "nope.json")
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("基线文件缺失时应当以退出码 2 结束")
+    assert "基线文件" in capsys.readouterr().err

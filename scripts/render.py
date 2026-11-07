@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import sys
 from pathlib import Path
 
@@ -39,9 +40,17 @@ def _locator_text(loc: dict) -> str:
     return " / ".join(parts) if parts else t
 
 
+def _severity(f: dict) -> str:
+    """取问题级别。非法或缺失的级别归入 P3，保证各处显示与总数一致。"""
+    sev = f.get("severity")
+    return sev if sev in SEVERITY_ORDER else "P3"
+
+
 def _issue_card(f: dict) -> str:
-    sev = f.get("severity", "P3")
-    loc = f.get("locator", {}) or {}
+    sev = _severity(f)
+    loc = f.get("locator") or {}
+    if not isinstance(loc, dict):
+        loc = {}
     extra = ""
     if loc.get("abbreviation"):
         # 缩写类 finding 的判别信息在 locator 里，quote 为空
@@ -63,6 +72,7 @@ def _issue_card(f: dict) -> str:
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> str:
+    """渲染表格。rows 的每个单元格按已转义的 HTML 处理，调用方需自行 esc()。"""
     if not rows:
         return '<p class="muted">无</p>'
     th = "".join(f"<th>{esc(h)}</th>" for h in headers)
@@ -72,7 +82,34 @@ def _table(headers: list[str], rows: list[list[str]]) -> str:
     return f"<table><thead><tr>{th}</tr></thead><tbody>{''.join(trs)}</tbody></table>"
 
 
-def _section_0(manifest: dict) -> str:
+def _count_severity(issues: list[dict]) -> dict[str, int]:
+    """按级别统计问题数。非法级别归入 P3，保证总数与逐级显示一致。"""
+    counts = {s: 0 for s in SEVERITY_ORDER}
+    for f in issues:
+        counts[_severity(f)] += 1
+    return counts
+
+
+def _entities_by_file(manifest: dict, consistency: dict) -> dict[str, list[str]]:
+    """每个文件推断出的主体名。
+
+    manifest.documents[].entities 是首选来源；阶段①未回写时退回
+    consistency.entities.per_file（那里可能有重复项，按出现顺序去重）。
+    """
+    out: dict[str, list[str]] = {}
+    per_file = (consistency.get("entities") or {}).get("per_file") or {}
+    for d in manifest.get("documents", []):
+        name = d.get("file", "")
+        raw = d.get("entities") or per_file.get(name) or []
+        seen: list[str] = []
+        for n in raw:
+            if n not in seen:
+                seen.append(n)
+        out[name] = seen
+    return out
+
+
+def _section_0(manifest: dict, entities: dict[str, list[str]]) -> str:
     rows = []
     for d in manifest.get("documents", []):
         st = d.get("stats", {})
@@ -83,10 +120,14 @@ def _section_0(manifest: dict) -> str:
             esc(st.get("words", 0)),
             esc(st.get("paragraphs", 0)),
             esc(st.get("tables", 0)),
+            esc("、".join(entities.get(d.get("file", ""), [])) or "未识别"),
             esc(d.get("sha256", "")[:12]),
         ])
     out = [f"<h2 id='s0'>§0 检查范围与未能检查项</h2>"]
-    out.append(_table(["文件", "类型", "页数", "字数", "段落", "表格", "SHA256 前缀"], rows))
+    out.append(_table(
+        ["文件", "类型", "页数", "字数", "段落", "表格", "推断出的主体名", "SHA256 前缀"],
+        rows,
+    ))
     fails = manifest.get("failures", [])
     if fails:
         out.append("<h3>未能检查的文件</h3>")
@@ -99,11 +140,8 @@ def _section_0(manifest: dict) -> str:
     return "".join(out)
 
 
-def _section_1(manifest, consistency, findings) -> str:
+def _section_1(consistency, findings, counts) -> str:
     all_issues = list(consistency.get("issues", [])) + list(findings)
-    counts = {s: 0 for s in SEVERITY_ORDER}
-    for f in all_issues:
-        counts[f.get("severity", "P3")] = counts.get(f.get("severity", "P3"), 0) + 1
     total = sum(counts.values()) or 1
     bars = []
     for s in SEVERITY_ORDER:
@@ -146,8 +184,8 @@ def _section_1(manifest, consistency, findings) -> str:
 
 def _section_2(consistency, findings) -> str:
     hard = [f for f in list(consistency.get("issues", [])) + list(findings)
-            if f.get("severity") in ("P0", "P1")]
-    hard.sort(key=lambda f: (f.get("severity", "P3"), f.get("file", "")))
+            if _severity(f) in ("P0", "P1")]
+    hard.sort(key=lambda f: (_severity(f), f.get("file", "")))
     out = ["<h2 id='s2'>§2 硬伤速览（P0 / P1）</h2>"]
     if not hard:
         out.append("<p>未发现 P0 或 P1 级问题。</p>")
@@ -156,7 +194,7 @@ def _section_2(consistency, findings) -> str:
     for f in hard:
         loc = _locator_text(f.get("locator", {}))
         rows.append([
-            f'<span class="badge {esc(f.get("severity", ""))}">{esc(f.get("severity", ""))}</span>',
+            f'<span class="badge {esc(_severity(f))}">{esc(_severity(f))}</span>',
             esc(f.get("file", "")),
             esc(loc),
             esc(f.get("description", "")),
@@ -165,7 +203,7 @@ def _section_2(consistency, findings) -> str:
     return "".join(out)
 
 
-def _section_3(consistency, findings) -> str:
+def _section_3(consistency, findings, manifest, entities) -> str:
     by_file: dict[str, list[dict]] = {}
     for f in list(consistency.get("issues", [])) + list(findings):
         by_file.setdefault(f.get("file", ""), []).append(f)
@@ -176,6 +214,7 @@ def _section_3(consistency, findings) -> str:
     for fname in sorted(by_file):
         items = by_file[fname]
         out.append(f"<details open><summary>{esc(fname)}（{len(items)} 个问题）</summary>")
+        out.append(_file_summary(manifest, fname, entities))
         groups: dict[str, list[dict]] = {}
         for f in items:
             groups.setdefault(f.get("category", "未分类"), []).append(f)
@@ -185,6 +224,32 @@ def _section_3(consistency, findings) -> str:
                 out.append(_issue_card(f))
         out.append("</details>")
     return "".join(out)
+
+
+def _file_summary(manifest: dict, fname: str, entities) -> str:
+    """文件摘要：规模、结构、主体名。"""
+    doc = next(
+        (d for d in manifest.get("documents", []) if d.get("file") == fname),
+        None,
+    )
+    if not doc:
+        return ""
+    st = doc.get("stats", {})
+    bits = [
+        f"规模：{st.get('words', 0)} 字 / {st.get('paragraphs', 0)} 段 / {st.get('tables', 0)} 表",
+    ]
+    if st.get("sheets") or st.get("rows"):
+        bits.append(f"结构：{st.get('sheets', 0)} 个工作表 / {st.get('rows', 0)} 行")
+    names = entities.get(fname, [])
+    bits.append(f"主体名：{'、'.join(names) if names else '未识别'}")
+    return f'<div class="muted">{"　｜　".join(bits)}</div>'
+
+
+_LIMITATION = (
+    "本工具仅做文档内互查，未核实外部事实。企业名称是否真实存在、"
+    "引用文献是否真实存在、法规是否现行有效，均需人工核实；"
+    "相关结论已标注「疑似 · 需人工核实」。"
+)
 
 
 _STYLE_CATEGORIES = ("字体一致性", "段落格式一致性")
@@ -206,8 +271,8 @@ def _section_4(consistency: dict) -> str:
             rows.append([
                 esc(v.get("label", key)),
                 esc(v.get("dominant")),
-                str(v.get("count", 0)),
-                str(v.get("total", 0)),
+                esc(v.get("count", 0)),
+                esc(v.get("total", 0)),
             ])
         out.append(_table(["项目", "主流值", "出现次数", "统计段落数"], rows))
     else:
@@ -217,7 +282,7 @@ def _section_4(consistency: dict) -> str:
     style_issues = [i for i in issues if i.get("category") in _STYLE_CATEGORIES]
     if style_issues:
         out.append(_table(
-            ["文件", "位置", "项目", "实际情况", "主流值"],
+            ["文件", "位置", "项目", "原文摘录", "说明"],
             [[esc(i.get("file", "")), esc(_locator_text(i.get("locator", {}))),
               esc(i.get("category", "")), esc(i.get("quote", "")),
               esc(i.get("description", ""))] for i in style_issues],
@@ -242,34 +307,46 @@ def _section_4(consistency: dict) -> str:
     if names:
         out.append(_table(
             ["主体名", "核心字号", "出现次数", "涉及文件"],
-            [[esc(n.get("name", "")), esc(n.get("core", "")), str(n.get("count", 0)),
+            [[esc(n.get("name", "")), esc(n.get("core", "")), esc(n.get("count", 0)),
               esc("、".join(n.get("files", [])))] for n in names],
         ))
     else:
         out.append("<p class='muted'>未识别到公司类名称。</p>")
     variants = entities.get("variants", [])
-    multi = [v for v in variants if len(v.get("names", [])) > 1]
+    # 按**规范写法**判定变体，不能按原始写法：
+    # 「与上海远大信息技术有限公司」与「上海远大信息技术有限公司」
+    # 规范写法相同，确定性检查刻意视为同一种写法，这里若按原始写法
+    # 就会报出一条与检查结论相矛盾的「写法变体」。
+    multi = [
+        v for v in variants
+        if len(v.get("canonicals") or v.get("names", [])) > 1
+    ]
     if multi:
         out.append(_table(
             ["核心字号", "写法变体"],
-            [[esc(v.get("core", "")), esc("、".join(v.get("names", [])))] for v in multi],
+            [[esc(v.get("core", "")),
+              esc("、".join(v.get("canonicals") or v.get("names", [])))]
+             for v in multi],
         ))
     else:
         out.append("<p class='muted'>未发现同一主体的多种写法。</p>")
     return "".join(out)
 
 
-def _section_5(findings: list[dict]) -> str:
+def _section_5(findings: list[dict], depth: str = "") -> str:
     todo = [f for f in findings if f.get("category") == "待补充内容"]
     verify = [f for f in findings if f.get("confidence") == "疑似 · 需人工核实"]
     out = ["<h2 id='s5'>§5 待补充与待核实</h2>"]
     out.append("<h3>待补充内容</h3>")
     if todo:
         out.append(_table(
-            ["文件", "位置", "缺失内容", "建议"],
-            [[esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
-              esc(f.get("quote", "")), esc(f.get("suggestion", ""))] for f in todo],
+            ["☐", "文件", "位置", "缺失内容", "为何需要", "建议"],
+            [["☐", esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+              esc(f.get("quote", "")), esc(f.get("description", "")),
+              esc(f.get("suggestion", ""))] for f in todo],
         ))
+    elif depth == "quick":
+        out.append("<p class='muted'>本次档位为 quick，未覆盖「待补充内容」这一类别。</p>")
     else:
         out.append("<p class='muted'>未发现待补充内容。</p>")
     out.append("<h3>需人工核实项</h3>")
@@ -284,16 +361,45 @@ def _section_5(findings: list[dict]) -> str:
     return "".join(out)
 
 
+def _file_state(row: dict) -> str:
+    """判断一个文件相对上次基线的状态。"""
+    state = row.get("state")
+    if state in ("added", "removed", "modified", "unchanged"):
+        return state
+    old = row.get("old_sha", "")
+    new = row.get("new_sha", "")
+    if not old and new:
+        return "added"
+    if old and not new:
+        return "removed"
+    return "modified" if old != new else "unchanged"
+
+
 def _section_6(baseline_diff: dict) -> str:
     if not baseline_diff:
         return ""
     fd = baseline_diff.get("findings", {})
     out = ["<h2 id='s6'>§6 复查对比</h2>"]
-    changed = [f for f in baseline_diff.get("files", []) if f.get("changed")]
-    if changed:
+    rows = baseline_diff.get("files", [])
+    modified = [r.get("file", "") for r in rows if _file_state(r) == "modified"]
+    added = [r.get("file", "") for r in rows if _file_state(r) == "added"]
+    removed = [r.get("file", "") for r in rows if _file_state(r) == "removed"]
+    if modified:
         out.append(
-            "<div class='limit'>以下文件已修改（相对上次检查），部分对比结果可能不适用："
-            + esc("、".join(f.get("file", "") for f in changed))
+            "<div class='limit'>以下文件已修改，部分对比结果可能不适用："
+            + esc("、".join(modified))
+            + "</div>"
+        )
+    if added:
+        out.append(
+            "<div class='limit'>以下文件为本次新增，没有上次基线可比："
+            + esc("、".join(added))
+            + "</div>"
+        )
+    if removed:
+        out.append(
+            "<div class='limit'>以下文件已删除，本次不再检查，其上次的基线不再适用："
+            + esc("、".join(removed))
             + "</div>"
         )
     for title, key in (("新增问题", "new"), ("已修复问题", "fixed"), ("未修复问题", "unchanged")):
@@ -302,7 +408,7 @@ def _section_6(baseline_diff: dict) -> str:
         if items:
             out.append(_table(
                 ["级别", "文件", "位置", "类别", "问题"],
-                [[f'<span class="badge {esc(f.get("severity", ""))}">{esc(f.get("severity", ""))}</span>',
+                [[f'<span class="badge {esc(_severity(f))}">{esc(_severity(f))}</span>',
                   esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
                   esc(f.get("category", "")), esc(f.get("description", ""))]
                  for f in items],
@@ -335,8 +441,28 @@ _RULES = [
 ]
 
 
+_DEPTH_COVERAGE = {
+    "quick": "阶段①全量确定性检查（含主体串写、主体名称、字体与体例检查）已做；"
+             "阶段②只做了错别字与标点扫描。"
+             "未做语义互查：前后矛盾、引用张冠李戴、待补充内容、数字逻辑、"
+             "表述歧义、术语一致性等类别本次未覆盖。",
+    "standard": "阶段①全量确定性检查 + 阶段②九类语义检查全做。",
+    "deep": "阶段①全量确定性检查 + 阶段②逐段细读，邻接窗口更大，跨片对照加强。",
+}
+
+
 def _section_7(manifest: dict) -> str:
     out = ["<h2 id='s7'>§7 附录</h2>"]
+    depth = manifest.get("depth", "")
+    out.append("<h3>本次检查范围</h3>")
+    out.append(_table(
+        ["项目", "内容"],
+        [
+            ["检查档位", esc(depth or "未知")],
+            ["覆盖范围", esc(_DEPTH_COVERAGE.get(
+                depth, "未知档位，请核对 scripts/chunk.py 的 DEPTH_PARAMS。"))],
+        ],
+    ))
     out.append("<h3>检查规则与判定标准</h3>")
     out.append(_table(["类别", "判定标准"], [[esc(a), esc(b)] for a, b in _RULES]))
     out.append("<h3>文件指纹</h3>")
@@ -348,23 +474,14 @@ def _section_7(manifest: dict) -> str:
     return "".join(out)
 
 
-_LIMITATION = (
-    "本工具仅做文档内互查，未核实外部事实。企业名称是否真实存在、"
-    "引用文献是否真实存在、法规是否现行有效，均需人工核实；"
-    "相关结论已标注「疑似 · 需人工核实」。"
-)
-
-
 def build_html(data: dict) -> str:
     manifest = data.get("manifest", {})
     consistency = data.get("consistency", {})
     findings = data.get("findings", [])
     baseline_diff = data.get("baseline_diff")
 
-    counts = {s: 0 for s in SEVERITY_ORDER}
-    for f in list(consistency.get("issues", [])) + list(findings):
-        sev = f.get("severity", "P3")
-        counts[sev] = counts.get(sev, 0) + 1
+    counts = _count_severity(list(consistency.get("issues", [])) + list(findings))
+    entities = _entities_by_file(manifest, consistency)
 
     toc = [
         ("§0 检查范围", "s0"),
@@ -381,12 +498,12 @@ def build_html(data: dict) -> str:
     nav = "".join(f"<a href='#{i}'>{t}</a>" for t, i in toc)
 
     body = "".join([
-        _section_0(manifest),
-        _section_1(manifest, consistency, findings),
+        _section_0(manifest, entities),
+        _section_1(consistency, findings, counts),
         _section_2(consistency, findings),
-        _section_3(consistency, findings),
+        _section_3(consistency, findings, manifest, entities),
         _section_4(consistency),
-        _section_5(findings),
+        _section_5(findings, manifest.get("depth", "")),
         _section_6(baseline_diff),
         _section_7(manifest),
     ])
@@ -412,12 +529,41 @@ def build_html(data: dict) -> str:
     )
 
 
+def _fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _read_json_or_fail(path: Path, what: str, hint: str = "") -> object:
+    """读 JSON 并给出中文错误提示。文件缺失或格式非法时以退出码 2 结束。"""
+    try:
+        return read_json(path)
+    except FileNotFoundError:
+        _fail(f"缺少 {what}：{path}。{hint}")
+    except json.JSONDecodeError as exc:
+        _fail(f"{what} 不是合法的 JSON：{path}（{exc}）。")
+    except UnicodeDecodeError:
+        _fail(f"{what} 不是 UTF-8 文本：{path}。")
+    return {}
+
+
+def _read_dict_or_fail(path: Path, what: str, hint: str = "") -> dict:
+    data = _read_json_or_fail(path, what, hint)
+    if not isinstance(data, dict):
+        _fail(f"{what} 应当是一个 JSON 对象：{path}。")
+    return data
+
+
 def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
     work = Path(work)
-    manifest = read_json(work / "manifest.json")
-    consistency = read_json(work / "consistency.json")
+    prepare_hint = "请先运行 scripts/prepare.py 生成工作目录。"
+    manifest = _read_dict_or_fail(work / "manifest.json", "manifest.json", prepare_hint)
+    consistency = _read_dict_or_fail(work / "consistency.json", "consistency.json", prepare_hint)
+
     findings_path = work / "findings.json"
-    findings = read_json(findings_path) if findings_path.exists() else []
+    findings: list = []
+    if findings_path.exists():
+        findings = _read_json_or_fail(findings_path, "findings.json", prepare_hint)
     errors = validate_findings(findings)
     if errors:
         for e in errors:
@@ -428,9 +574,14 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
     if baseline is not None:
         from baseline import diff_findings, diff_manifests
 
-        prev = read_json(Path(baseline))
+        prev = _read_dict_or_fail(Path(baseline), "基线文件")
+        # 复查对比必须覆盖**两层**：模型写的 findings 与确定性层的 issues。
+        # 只比模型侧，新出现的 P0 混主体会在 §2/§3 显示却不被计入 §6，
+        # 等于在专门用来追踪变化的章节里说了假话。
+        current_all = list(findings) + list(consistency.get("issues", []))
+        prev_all = list(prev.get("findings", [])) + list(prev.get("issues", []))
         baseline_diff = {
-            "findings": diff_findings(findings, prev.get("findings", [])),
+            "findings": diff_findings(current_all, prev_all),
             "files": diff_manifests(manifest, prev.get("manifest", {})),
         }
 
@@ -448,6 +599,7 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
     write_json(work / "last-findings.json", {
         "generated_at": manifest.get("generated_at", ""),
         "findings": findings,
+        "issues": consistency.get("issues", []),
         "manifest": manifest,
     })
     return out
