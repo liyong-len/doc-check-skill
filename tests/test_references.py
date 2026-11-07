@@ -132,24 +132,32 @@ def test_format_rules_states_region_retaining_rule():
 
 
 def test_format_rules_states_suffix_condition():
-    # 互为后缀还要多出来的那部分不含切分连接词，
-    # 否则「联合网络通信」会被并进「网络通信」
+    # 互为后缀还要多出来的那部分不含字号级连接词、也不是行政区划，
+    # 否则「联合网络通信」会被并进「网络通信」，
+    # 「上海华为技术有限公司」会被并进「华为技术有限公司」
     text = _read("format-rules.md")
-    assert "不含切分连接词" in text
+    assert "不含字号级连接词" in text
+    assert "也不是行政区划" in text
 
 
-def test_format_rules_distinguishes_the_two_connector_lists():
-    """两组连接词不能都叫「弱连接词」，否则会被当成同一组。
+def test_format_rules_states_the_unified_connector_rule():
+    """连接词只有一张表，分两类，抽取与归组用的是同一条规则。
 
-    一组是规范核心字号去前缀时剥的（11 项），一组是抽取时判断
-    「后面是不是另一个主体的起点」的（15 项）。
+    两套词各用一套的代价是「和」「同」在两处行为不一致：
+    抽取时把「和深圳华信科技」的「和」裁掉，规范核心字号却留着它，
+    同一个主体的两种写法因此对不上号。
     """
     text = _read("format-rules.md")
-    assert "弱连接词" in text
-    assert "切分连接词" in text
-    # 抽取时用的那一组是 15 项，规范核心用的那一组是 11 项
+    assert "句子级" in text
+    assert "字号级" in text
+    # 两组词都要列全
+    assert (
+        "以及、并且、我方、贵司、双方、各方、甲方、乙方、中标人、投标人、供应商、"
+        "承包人、采购方、招标人、招标代理、受托、委托、由"
+    ) in text
     assert "联合、协作、为、和、同、经、并、及、与、是、从、给、向、对、或、代理" in text
-    assert "为、经、并、及、与、是、从、给、向、对、或" in text
+    # 规则本身：位置决定，不看字本身
+    assert "后面紧跟" in text
 
 
 def test_format_rules_states_min_prefix_len_guard():

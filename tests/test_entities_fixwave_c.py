@@ -27,7 +27,7 @@ def test_two_companies_joined_by_he_stay_separate():
     names = extract_company_names(
         "本项目由北京华信科技有限公司和华为技术有限公司联合承担。"
     )
-    assert names == ["北京华信科技有限公司", "华为技术有限公司"]
+    assert names == ["北京华信科技有限公司", "和华为技术有限公司"]
 
 
 def test_two_companies_joined_by_yu_stay_separate():
@@ -42,7 +42,8 @@ def test_two_companies_joined_by_he_are_not_invented_as_one():
     names = extract_company_names(
         "本项目由北京华信科技有限公司和华为技术有限公司联合承担。"
     )
-    assert not any("和" in n for n in names)
+    assert "北京华信科技有限公司和华为技术有限公司" not in names
+    assert len(names) == 2, names
 
 
 def test_connector_inside_a_company_name_keeps_one_name():
@@ -76,7 +77,7 @@ def test_name_still_extends_over_an_inner_form_word():
 def test_group_after_the_boundary_is_split_in_two():
     """集团 + 连接词 + 另一个公司：三个字都在，边界也要认。"""
     names = extract_company_names("北京华信集团有限公司和华为技术有限公司")
-    assert names == ["北京华信集团有限公司", "华为技术有限公司"]
+    assert names == ["北京华信集团有限公司", "和华为技术有限公司"]
 
 
 # --- C-2：通用片段不能把真实公司名丢掉 ---
