@@ -2199,6 +2199,7 @@ def _collect_deviations(documents, keys, category, severity, min_ratio=0.6):
                     "type": "paragraph",
                     "index": block["index"],
                     "section_path": block.get("section_path", ""),
+                    "field": key,
                 },
                 quote=block.get("text", "")[:60],
                 description=(
@@ -2292,6 +2293,21 @@ def _cats(result):
 
 
 def test_heading_numbering_systems_mixed():
+    # 「1.1 式」与「（一）式」都在第 4 层，同层混用才是体例不一致
+    docs = [_doc("a.docx", [
+        _p("第一章 总则"),
+        _p("一、总体要求"),
+        _p("1. 适用范围"),
+        _p("（一）背景说明"),
+        _p("1.1 实施进度"),
+    ])]
+    result = analyze(docs)
+    issue = next(i for i in result["issues"] if i["category"] == "标题层级体例")
+    assert "编号体系" in issue["description"]
+
+
+def test_standard_four_level_structure_is_not_flagged():
+    # 标准的四级结构不是体例不一致，不能每份文档都报
     docs = [_doc("a.docx", [
         _p("第一章 总则"),
         _p("一、总体要求"),
@@ -2299,8 +2315,7 @@ def test_heading_numbering_systems_mixed():
         _p("（一）背景说明"),
     ])]
     result = analyze(docs)
-    issue = next(i for i in result["issues"] if i["category"] == "标题层级体例")
-    assert "编号体系" in issue["description"]
+    assert [i for i in result["issues"] if i["category"] == "标题层级体例"] == []
 
 
 def test_figure_caption_styles_mixed():
@@ -2339,6 +2354,16 @@ def test_date_format_mixed():
     ])]
     result = analyze(docs)
     assert "数字与单位" in _cats(result)
+
+
+def test_currency_regex_only_matches_yuan():
+    # 「3单元」「100美元」不是人民币金额，不该触发货币混用
+    docs = [_doc("a.docx", [
+        _p("本项目分为 3单元。"),
+        _p("合同金额 100美元。"),
+    ])]
+    result = analyze(docs)
+    assert "数字与单位" not in _cats(result)
 
 
 def test_uniform_document_has_no_convention_issue():
@@ -2413,30 +2438,39 @@ Expected: FAIL，测试用例失败（缺少对应 category）
 ```python
 import re
 
-# 标题编号体系
+# 标题编号体系，附「隐含层级」。
+#
+# 同一层级用两种写法才是体例不一致；不同层级出现不同写法是正常结构。
+# 「第一章 / 一、 / 1. /（一）」是标准的四级结构，跨层比较写法
+# 会把每一份结构正常的中文文档都报成体例不一致。
 _HEADING_PATTERNS = [
-    ("第一章式", re.compile(r"^第[一二三四五六七八九十百]+章")),
-    ("一、式", re.compile(r"^[一二三四五六七八九十]+、")),
-    ("（一）式", re.compile(r"^[（(][一二三四五六七八九十]+[）)]")),
-    ("1. 式", re.compile(r"^\d+[.、]\s")),
-    ("1.1 式", re.compile(r"^\d+\.\d+[.、]?\s")),
+    ("第一章式", re.compile(r"^第[一二三四五六七八九十百]+章"), 1),
+    ("一、式", re.compile(r"^[一二三四五六七八九十]+、"), 2),
+    ("1. 式", re.compile(r"^\d+[.、]\s"), 3),
+    ("（一）式", re.compile(r"^[（(][一二三四五六七八九十]+[）)]"), 4),
+    ("1.1 式", re.compile(r"^\d+\.\d+[.、]?\s"), 4),
 ]
 
 # 图表题注写法
+#
+# 序号后面若紧跟量词或量类（个/条/节/页…），那不是编号，
+# 「见图 3 节」「（2）个标段」这类会被误判成题注或引用。
+_NOT_A_NUMBER_TAIL = r"(?!\s*[个条项处次段章节份件标页类])"
+
 _CAPTION_PATTERNS = [
-    ("图N-N", re.compile(r"^图\s*\d+[-－]\d+")),
-    ("图N.N", re.compile(r"^图\s*\d+\.\d+")),
-    ("图N", re.compile(r"^图\s*\d+")),
-    ("表N-N", re.compile(r"^表\s*\d+[-－]\d+")),
-    ("表N.N", re.compile(r"^表\s*\d+\.\d+")),
-    ("表N", re.compile(r"^表\s*\d+")),
+    ("图N-N", re.compile(r"图\s*\d+[-－]\d+" + _NOT_A_NUMBER_TAIL)),
+    ("图N.N", re.compile(r"图\s*\d+\.\d+")),
+    ("图N", re.compile(r"图\s*\d+" + _NOT_A_NUMBER_TAIL)),
+    ("表N-N", re.compile(r"表\s*\d+[-－]\d+" + _NOT_A_NUMBER_TAIL)),
+    ("表N.N", re.compile(r"表\s*\d+\.\d+")),
+    ("表N", re.compile(r"表\s*\d+" + _NOT_A_NUMBER_TAIL)),
 ]
 
-# 引用标记写法
+# 引用标记写法。序号限三位数，避免把年份「（2024）」当引用。
 _CITATION_PATTERNS = [
-    ("文献[n]", re.compile(r"^文献\[\d+\]")),
-    ("[n]", re.compile(r"^\[\d+\]")),
-    ("（n）", re.compile(r"^[（(]\d+[）)]")),
+    ("文献[n]", re.compile(r"文献\[\d+\]")),
+    ("[n]", re.compile(r"\[\d+(?:[-–—,，]\d+)*\]")),
+    ("（n）", re.compile(r"[（(]\d{1,3}[）)]" + _NOT_A_NUMBER_TAIL)),
 ]
 
 _DATE_PATTERNS = [
@@ -2457,10 +2491,20 @@ def _text_blocks(documents):
 
 
 def _classify(text, patterns):
-    for label, rx in patterns:
+    """返回匹配到的体系名。patterns 的元素为 (label, regex) 或 (label, regex, depth)。"""
+    for item in patterns:
+        label, rx = item[0], item[1]
         if rx.match(text.strip()):
             return label
     return None
+
+
+def _classify_depth(text, patterns):
+    """返回 (体系名, 隐含层级)。patterns 元素为 (label, regex, depth)。"""
+    for label, rx, depth in patterns:
+        if rx.match(text.strip()):
+            return label, depth
+    return None, None
 
 
 def _mixed_style_issue(documents, category, patterns, severity, sample=3, prefix=""):
@@ -2503,6 +2547,31 @@ _ABBR_STOPLIST = {
 }
 
 
+_HEADER_LABELS = {
+    "bold": "全部加粗",
+    "not-bold": "不加粗",
+    "mixed": "部分加粗",
+    "empty": "空表头",
+}
+
+
+def _header_signature(first: list[dict]) -> str:
+    """表头样式指纹：只看加粗与否，不看列数。
+
+    列数不同的表，其表头写法可能完全一致；把列数算进指纹会把
+    宽度不同的表误报成体例不一致，描述还会自相矛盾
+    （「主流为 加粗，本表为 加粗」）。
+    """
+    if not first:
+        return "empty"
+    bold = sum(1 for c in first if (c.get("style") or {}).get("bold"))
+    if bold == 0:
+        return "not-bold"
+    if bold == len(first):
+        return "bold"
+    return "mixed"
+
+
 def check_tables(documents: list[dict]) -> list[dict]:
     """表格体例：各表首行的加粗写法应一致。"""
     issues = []
@@ -2517,8 +2586,7 @@ def check_tables(documents: list[dict]) -> list[dict]:
             first = rows[0]
             if not any((c.get("style") or {}).get("bold") is not None for c in first):
                 continue
-            sig = tuple(bool((c.get("style") or {}).get("bold")) for c in first)
-            signatures.append((doc["file"], b["index"], sig))
+            signatures.append((doc["file"], b["index"], _header_signature(first)))
     if len(signatures) < 2:
         return issues
     counts = Counter(sig for _, _, sig in signatures)
@@ -2534,9 +2602,8 @@ def check_tables(documents: list[dict]) -> list[dict]:
             locator={"type": "table", "index": idx, "row": 1},
             quote="",
             description=(
-                f"该表首行样式与全文主流写法不一致：主流为 "
-                f"{'加粗' if any(main_sig) else '不加粗'}，本表为 "
-                f"{'加粗' if any(sig) else '不加粗'}。"
+                f"该表首行样式与全文主流写法不一致：主流为「{_HEADER_LABELS[main_sig]}」，"
+                f"本表为「{_HEADER_LABELS[sig]}」。"
             ),
             suggestion="统一表头行的加粗写法。",
         ))
@@ -2572,43 +2639,81 @@ def check_list_numbering(documents: list[dict]) -> list[dict]:
 
 
 def check_abbreviations(documents: list[dict]) -> list[dict]:
-    """术语与缩写：英文缩写首次出现应给出全称。"""
+    """术语与缩写：英文缩写首次出现应给出全称。
+
+    「首次出现时应给出全称」——定义出现在首次出现之后的段落不算数。
+    缩写本身放进 locator，避免同一段里两个缩写撞指纹。
+    """
     issues = []
     for doc in documents:
-        defined: set[str] = set()
-        seen: dict[str, str] = {}
-        order: list[str] = []
+        para_defs: list[set[str]] = []
+        para_tokens: list[list[str]] = []
         for _, b in _text_blocks([doc]):
             text = b.get("text", "")
-            for m in _DEFINED_ABBR_RE.finditer(text):
-                defined.add(m.group(1))
-            for m in _ABBR_RE.finditer(text):
-                token = m.group(0)
-                if token in _ABBR_STOPLIST:
+            para_defs.append({m.group(1) for m in _DEFINED_ABBR_RE.finditer(text)})
+            para_tokens.append([
+                m.group(0) for m in _ABBR_RE.finditer(text)
+                if m.group(0) not in _ABBR_STOPLIST
+            ])
+
+        defined_upto: set[str] = set()
+        reported: set[str] = set()
+        for i, tokens in enumerate(para_tokens):
+            defined_upto |= para_defs[i]   # 本段给出的定义也算
+            for token in tokens:
+                if token in reported:
                     continue
-                if token not in seen:
-                    seen[token] = text.strip()[:60]
-                    order.append(token)
-        for token in order:
-            if token in defined:
+                reported.add(token)
+                if token in defined_upto:
+                    continue
+                issues.append(make_finding(
+                    severity="P3", category="术语与缩写", detector="deterministic",
+                    confidence="确定", file=doc["file"],
+                    locator={"type": "file", "abbreviation": token},
+                    quote="",
+                    description=f"缩写「{token}」首次出现时未给出全称。",
+                    suggestion=f"首次出现时写为「中文全称（{token}）」。",
+                ))
+    return issues
+
+
+def check_heading_numbering(documents: list[dict]) -> list[dict]:
+    """标题层级体例：同一层级的编号写法必须一致。
+
+    不同层级出现不同写法是正常结构（第一章 / 一、 / 1. /（一）），
+    只有同一层级混用两种写法才是体例不一致。
+    """
+    issues = []
+    for doc in documents:
+        by_depth: dict[int, dict[str, list[str]]] = {}
+        for _, b in _text_blocks([doc]):
+            label, depth = _classify_depth(b.get("text", ""), _HEADING_PATTERNS)
+            if label is None:
                 continue
+            by_depth.setdefault(depth, {}).setdefault(label, []).append(
+                b.get("text", "").strip()[:40]
+            )
+        for depth, styles in sorted(by_depth.items()):
+            if len(styles) < 2:
+                continue
+            labels = sorted(styles)
+            samples = [t for v in styles.values() for t in v][:3]
             issues.append(make_finding(
-                severity="P3", category="术语与缩写", detector="deterministic",
+                severity="P2", category="标题层级体例", detector="deterministic",
                 confidence="确定", file=doc["file"], locator={"type": "file"},
-                quote=seen[token],
+                quote=samples[0],
                 description=(
-                    f"缩写「{token}」在文中出现但未给出全称。"
+                    f"同一层级的标题编号体系混用：{'、'.join(labels)}。"
+                    f"示例：{'；'.join(samples)}"
                 ),
-                suggestion=f"首次出现时写为「中文全称（{token}）」。",
+                suggestion="统一同一层级的标题编号写法。",
             ))
     return issues
 
 
 def check_conventions(documents: list[dict]) -> list[dict]:
     issues = []
-    issues += _mixed_style_issue(
-        documents, "标题层级体例", _HEADING_PATTERNS, "P2", prefix="标题编号体系"
-    )
+    issues += check_heading_numbering(documents)
     issues += _mixed_style_issue(
         documents, "图表题注体例", _CAPTION_PATTERNS, "P2", prefix="图表题注写法"
     )
@@ -2760,6 +2865,27 @@ def test_leading_weak_connector_is_not_a_second_entity():
     ])]
     result = analyze(docs)
     assert [i for i in result["issues"] if i["category"] in ("主体名称", "主体串写")] == []
+
+
+def test_file_name_distinguishes_entities():
+    # 文件名里出现了其中一个主体，说明这些主体是被显式区分的，不报混主体
+    doc = _doc("北京华信科技有限公司投标文件.docx", [
+        "北京华信科技有限公司为主体。",
+        "上海远大信息技术有限公司为协作方。",
+    ])
+    result = analyze([doc])
+    assert [i for i in result["issues"] if i["category"] == "主体串写"] == []
+
+
+def test_section_heading_distinguishes_entities():
+    doc = _doc("a.docx", [
+        "北京华信科技有限公司为主体。",
+        "上海远大信息技术有限公司为协作方。",
+    ])
+    doc["sections"] = [{"path": "上海远大信息技术有限公司", "level": 1,
+                        "heading": "上海远大信息技术有限公司", "start": 0, "end": 1}]
+    result = analyze([doc])
+    assert [i for i in result["issues"] if i["category"] == "主体串写"] == []
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2815,16 +2941,18 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
     for doc in documents:
         groups = group_variants(per_file[doc["file"]])
         if len(groups) >= 2:
-            shown = sorted({n for n in per_file[doc["file"]]})
+            shown = [g["names"][0] for g in groups]
+            if _distinguished_by_header(doc, groups):
+                continue
             issues.append(make_finding(
                 severity="P0", category="主体串写", detector="deterministic",
                 confidence="疑似 · 需人工核实", file=doc["file"],
                 locator={"type": "file"},
                 quote=shown[0],
                 description=(
-                    f"该文件出现 {len(groups)} 个不同主体名称："
+                    f"该文件出现 {len(groups)} 个不同主体："
                     + "、".join(shown[:5])
-                    + "。若本文件应只涉及单一主体，则存在主体写混。"
+                    + "。文件名与章节标题中未出现这些主体名称，无法据此区分，疑似写混。"
                 ),
                 suggestion="确认每个名称的归属，删除与本文件主体无关的名称。",
             ))
@@ -2848,6 +2976,24 @@ def _first_file_for(names: dict, group_names: list[str]) -> str:
         if v["name"] in group_names:
             return v["files"][0] if v["files"] else ""
     return ""
+
+
+def _distinguished_by_header(doc: dict, groups: list[dict]) -> bool:
+    """文件名或章节标题中出现了某个主体名，说明这些主体是被显式区分的。
+
+    规范 §5.4：疑似混主体的前提是「未由文件名或章节标题显式区分」。
+    """
+    header = doc.get("file", "") + " " + " ".join(
+        str(s.get("heading", "")) for s in doc.get("sections", [])
+    )
+    for g in groups:
+        candidates = list(g.get("names", []))
+        if g.get("core"):
+            candidates.append(g["core"])
+        for name in candidates:
+            if name and name in header:
+                return True
+    return False
 ```
 
 在 `analyze()` 中追加调用：
@@ -5419,6 +5565,8 @@ def make_docx(path: Path) -> None:
     p.runs[0].font.size = Pt(12)
     d.add_paragraph("一、总体要求")
     d.add_paragraph("1. 适用范围")
+    d.add_paragraph("（一）背景说明")
+    d.add_paragraph("1.1 实施进度")
     d.add_paragraph("本项目工期为 60 日历天。")
     d.add_paragraph("相关依据[1]说明本方案满足要求。")
     d.add_paragraph("如图1-1所示的设备清单。")
