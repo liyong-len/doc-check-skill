@@ -1452,6 +1452,23 @@ def test_paren_group_is_consumed_atomically():
     assert extract_company_names("（北京华信科技有限公司）") == ["北京华信科技有限公司"]
 
 
+def test_leading_annotation_parens_are_not_part_of_the_name():
+    # 注解与编号括号不是字号的一部分
+    assert extract_company_names("（招标人）北京华信科技有限公司") == ["北京华信科技有限公司"]
+    assert extract_company_names("（1）北京华信科技有限公司") == ["北京华信科技有限公司"]
+
+
+def test_agent_word_inside_a_company_name_is_not_a_connector():
+    # 「代理记账」「代理财务」里的「代理」是字号的一部分
+    assert extract_company_names("深圳市代理记账服务有限公司") == ["深圳市代理记账服务有限公司"]
+    assert extract_company_names("深圳代理财务咨询有限公司") == ["深圳代理财务咨询有限公司"]
+
+
+def test_canonical_name_normalizes_width_and_whitespace():
+    assert canonical_name("北京华信（集团）有限公司") == canonical_name("北京华信(集团)有限公司")
+    assert canonical_name("北京 华信科技有限公司") == "北京华信科技有限公司"
+
+
 def test_org_form_suffix_is_not_stripped():
     # 研究院/设计院不是企业形式，剥掉会把不同主体并到一起
     assert canonical_core("中国建筑设计院有限公司") == "中国建筑设计院"
@@ -1550,7 +1567,7 @@ _REGIONS = [
 # （「和而泰智能控制股份有限公司」会被截成「而泰智能控制股份有限公司」）。
 _STRONG_CONNECTORS = [
     "以及", "并且", "我方", "贵司", "双方", "各方", "甲方", "乙方", "中标人",
-    "投标人", "供应商", "承包人", "采购方", "招标人", "招标代理", "代理",
+    "投标人", "供应商", "承包人", "采购方", "招标人", "招标代理",
     "受托", "委托", "由",
 ]
 _WEAK_CONNECTORS = [
@@ -1582,7 +1599,7 @@ _NON_NAME_WORDS = {
 }
 
 _NAME_RE = re.compile(
-    r"(?P<pre>(?:[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）){2,30}?)"
+    r"(?P<pre>[一-龥A-Za-z0-9·](?:[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）){1,29}?)"
     r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
 
@@ -1758,11 +1775,15 @@ def canonical_core(name: str) -> str:
 
 
 def canonical_name(name: str) -> str:
-    """同一主体的规范写法：去掉开头的弱连接词。"""
+    """同一主体的规范写法：归一化后去掉开头的弱连接词。
+
+    必须与 canonical_core 用同一套归一化，否则全角半角括号、
+    空白差异会被当成两种写法，报出假的「同一主体出现多种写法」。
+    """
     for s in _SUFFIXES:
         if name.endswith(s):
-            return _strip_leading_weak(name[: -len(s)]) + s
-    return _strip_leading_weak(name)
+            return _strip_leading_weak(normalize_name(name[: -len(s)])) + s
+    return _strip_leading_weak(normalize_name(name))
 
 
 def _extra_head_is_clean(longer: str, shorter: str) -> bool:
