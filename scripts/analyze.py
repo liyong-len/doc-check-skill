@@ -1,12 +1,15 @@
 """确定性检查：样式一致性、段落格式一致性、体例规则、主体名。
 
-本文件在后续任务中继续扩展，先落地样式与段落格式两块。
+本模块只做不依赖外部依据的机械检查，不联网、不调用模型。
+所有问题都经 schema.make_finding 产出，置信度只有「确定」一种，
+唯一的例外是 P0「主体串写」——没有外部依据，无法确认哪个名称才是对的。
 """
 from __future__ import annotations
 
 import re
 from collections import Counter
 
+from entities import canonical_core, extract_company_names, group_variants
 from schema import make_finding
 
 # 参与一致性比对的样式字段
@@ -346,11 +349,97 @@ def check_conventions(documents: list[dict]) -> list[dict]:
     return issues
 
 
+def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
+    issues: list[dict] = []
+    names: dict[str, dict] = {}
+    per_file: dict[str, list[str]] = {}
+    all_names: list[str] = []
+    seen_names: set[str] = set()
+
+    for doc in documents:
+        found: list[str] = []
+        for _, b in _text_blocks([doc]):
+            found.extend(extract_company_names(b.get("text", "")))
+        per_file[doc["file"]] = found
+        for name in found:
+            if name not in seen_names:
+                seen_names.add(name)
+                all_names.append(name)
+            key = canonical_core(name)
+            if key not in names:
+                names[key] = {"name": name, "core": key, "count": 0, "files": []}
+            names[key]["count"] += 1
+            if doc["file"] not in names[key]["files"]:
+                names[key]["files"].append(doc["file"])
+
+    # 变体聚类必须基于全部原始写法，不能基于按主体标识归并后的名单：
+    # 「北京华信科技有限公司」与「北京华信科技有限责任公司」的主体标识相同，
+    # 归并后只剩一个名字，写法不统一就再也查不出来了。
+    variants = group_variants(all_names)
+
+    for group in variants:
+        writings = group.get("canonicals") or group["names"]
+        if len(writings) < 2:
+            continue
+        issues.append(make_finding(
+            severity="P1", category="主体名称", detector="deterministic",
+            confidence="确定", file=_first_file_for(names, group["names"]),
+            locator={"type": "file"},
+            quote=group["names"][0],
+            description=(
+                f"同一主体出现 {len(writings)} 种名称写法："
+                + "、".join(writings)
+                + "。全套文档应统一使用同一名称。"
+            ),
+            suggestion=f"统一为正式全称「{writings[0]}」。",
+        ))
+
+    for doc in documents:
+        groups = group_variants(per_file[doc["file"]])
+        if len(groups) >= 2:
+            shown = sorted({n for n in per_file[doc["file"]]})
+            issues.append(make_finding(
+                severity="P0", category="主体串写", detector="deterministic",
+                confidence="疑似 · 需人工核实", file=doc["file"],
+                locator={"type": "file"},
+                quote=shown[0],
+                description=(
+                    f"该文件出现 {len(groups)} 个不同主体名称："
+                    + "、".join(shown[:5])
+                    + "。若本文件应只涉及单一主体，则存在主体写混。"
+                ),
+                suggestion="确认每个名称的归属，删除与本文件主体无关的名称。",
+            ))
+
+    summary = {
+        "names": [
+            {
+                "name": v["name"], "core": v["core"], "count": v["count"],
+                "files": v["files"],
+            }
+            for v in names.values()
+        ],
+        "variants": variants,
+        "per_file": per_file,
+    }
+    return issues, summary
+
+
+def _first_file_for(names: dict, group_names: list[str]) -> str:
+    for v in names.values():
+        if v["name"] in group_names:
+            return v["files"][0] if v["files"] else ""
+    return ""
+
+
 def analyze(documents: list[dict]) -> dict:
     issues = []
     issues += _collect_deviations(documents, _FONT_KEYS, "字体一致性", "P2")
     issues += _collect_deviations(documents, _PARA_KEYS, "段落格式一致性", "P2")
     issues += check_conventions(documents)
+
+    entity_issues, entity_summary = check_entities(documents)
+    issues += entity_issues
 
     profile = {}
     for key in _FONT_KEYS + _PARA_KEYS:
@@ -365,6 +454,6 @@ def analyze(documents: list[dict]) -> dict:
     return {
         "style_profile": profile,
         "issues": issues,
-        "entities": {},
+        "entities": entity_summary,
         "stats": {"documents": len(documents), "issues": len(issues)},
     }
