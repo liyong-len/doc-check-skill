@@ -30,6 +30,10 @@ _CONNECTORS = [
     "同", "并", "或",
 ]
 
+# 裁剪后至少要剩下的字号长度。太短说明连接词本身是字号的一部分
+# （「华为技术」中的「为」），此时不裁剪。
+_MIN_PREFIX_LEN = 4
+
 _NAME_RE = re.compile(
     r"(?P<pre>[一-龥A-Za-z0-9·]{2,30}?)"
     r"(?P<suf>股份有限公司|有限责任公司|集团有限公司|有限公司|集团|研究院|研究所|设计院|事务所|工程中心|中心)"
@@ -50,15 +54,27 @@ def _is_form_fragment(prefix: str) -> bool:
 
 
 def _trim_prefix(prefix: str) -> str:
-    """切掉前缀中的最后一个连接词，取其后的部分作为字号主体。"""
-    cut = -1
+    """切掉前缀中的连接词，取最长的合格切分作为字号主体。
+
+    枚举每个连接词的出现位置，切掉它及其之前的部分，在长度不小于
+    _MIN_PREFIX_LEN 的候选中取最长的那个。长度都不合格时完全不裁剪——
+    连接词本身可能是字号的一部分（「华为技术」中的「为」）。
+    """
+    best = None
     for conn in _CONNECTORS:
-        idx = prefix.rfind(conn)
-        if idx >= 0:
-            cut = max(cut, idx + len(conn))
-    if cut >= 0:
-        prefix = prefix[cut:]
-    return prefix.strip()
+        start = 0
+        while True:
+            idx = prefix.find(conn, start)
+            if idx < 0:
+                break
+            candidate = prefix[idx + len(conn):].strip()
+            if len(candidate) >= _MIN_PREFIX_LEN:
+                if best is None or len(candidate) > len(best):
+                    best = candidate
+            start = idx + 1
+    if best is None:
+        return prefix.strip()
+    return best
 
 
 def extract_company_names(text: str) -> list[str]:

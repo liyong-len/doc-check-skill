@@ -17,6 +17,19 @@ def test_extract_company_names_ignores_plain_text():
     assert extract_company_names("这是一段普通说明文字。") == []
 
 
+def test_connector_inside_company_name_is_not_trimmed():
+    # 「为」「和」也是字号的一部分，不能把「华为技术」裁成「技术」
+    assert extract_company_names("华为技术有限公司") == ["华为技术有限公司"]
+    assert extract_company_names("北京和信科技有限公司") == ["北京和信科技有限公司"]
+
+
+def test_trim_picks_longest_qualifying_cut():
+    # 「由」切出 6 字、「和」只切出 3 字，取更长的那个
+    assert extract_company_names("本项目由北京和兴科技有限公司编制") == [
+        "北京和兴科技有限公司"
+    ]
+
+
 def test_extract_company_names_skips_split_form_word():
     # 「股份有限公司」不是主体名，是形式词被从中间切开的结果
     names = extract_company_names("中标候选人：中信建设集团股份有限公司")
