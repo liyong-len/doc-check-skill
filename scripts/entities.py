@@ -41,7 +41,7 @@ _STRONG_CONNECTORS = [
 ]
 _WEAK_CONNECTORS = [
     "联合", "协作", "为", "和", "同", "经", "并", "及", "与", "是", "从",
-    "给", "向", "对", "或",
+    "给", "向", "对", "或", "代理",
 ]
 
 # 裁剪后至少要剩下的字号长度。太短说明连接词本身是字号的一部分
@@ -67,12 +67,35 @@ _NON_NAME_WORDS = {
     "科技", "技术", "信息", "网络", "发展", "建设", "投资", "贸易", "工程",
 }
 
+# 行业词全集。字号以行业词结尾时，它描述的是经营范围而不是字号本身，
+# 因此不能拿它当简称（「北京华信科技」不是「北京华信科技有限公司」的简称，
+# 是另一家公司）。「服务」「咨询」也计入：把它们当成简称会把
+# 「北京华信科技服务有限公司」并进「北京华信科技有限公司」。
+_INDUSTRY_WORDS = _NON_NAME_WORDS | {"服务", "咨询"}
+
+# 企业形式词：剥掉之后剩下的才是字号
+_ENTERPRISE_SUFFIXES = [
+    "股份有限公司", "有限责任公司", "集团有限公司", "有限公司",
+]
+
+# 组织形式词：不是企业形式，但单独作为字号时是通用片段
+# （「研究院有限公司」「设计院有限公司」不是公司名）
+_ORG_FORM_WORDS = {"研究院", "研究所", "设计院", "事务所", "集团"}
+
 # 括号组整体进入字号：括号里的「集团」是字号的一部分，不能当成公司词尾，
 # 否则「北京华信(集团)有限公司」会被切成「北京华信(集团」。
 _NAME_RE = re.compile(
     r"(?P<pre>[一-龥A-Za-z0-9·](?:[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）){1,29}?)"
     r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
+
+# 「名字串」的一个片段：单个名字字符，或一整组括号
+_NAME_CHUNK_RE = re.compile(
+    r"[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）"
+)
+
+# 在一段文字里找公司形式词
+_SUFFIX_SEARCH_RE = re.compile("|".join(map(re.escape, _SUFFIXES)))
 
 
 def _is_form_fragment(prefix: str) -> bool:
@@ -150,36 +173,155 @@ def _best_cut(prefix: str, conn: str, best: str | None, require_region: bool) ->
     return best
 
 
+def _segment_end(text: str, start: int) -> int:
+    """从 start 开始，「名字串」能延伸到哪儿（标点、空白处为止）。
+
+    名字串由名字字符与整组括号拼成，「）」这种落单的括号不算名字字符。
+    """
+    i = start
+    n = len(text)
+    while i < n:
+        m = _NAME_CHUNK_RE.match(text, i)
+        if not m:
+            break
+        i = m.end()
+    return i
+
+
+def _has_name_boundary(text: str) -> bool:
+    """片段里是否出现了「另一个主体的起点」。
+
+    强连接词后面必然是新主体；弱连接词后面紧跟行政区划时也是新主体
+    （「北京华信科技有限公司和上海远大信息技术有限公司」是两个主体）。
+    """
+    for conn in _STRONG_CONNECTORS:
+        if conn in text:
+            return True
+    for conn in _WEAK_CONNECTORS:
+        idx = text.find(conn)
+        while idx >= 0:
+            if _starts_with_region(text[idx + len(conn):]):
+                return True
+            idx = text.find(conn, idx + 1)
+    return False
+
+
 def _extend_over_suffix(text: str, end: int) -> int:
-    """词尾后紧跟另一个词尾时，把名字延伸过去。
+    """把名字延伸过紧跟其后的公司形式词，以及同一串里更靠后的形式词。
 
     「中国建筑设计院有限公司」的非贪婪匹配会停在「设计院」，
     余下的「有限公司」才是真正的企业形式词。
+
+    「北京华信集团研究院有限公司」「中铁建工集团北京工程有限公司」
+    这类名字里，字号本身还含有形式词或行业词，最外层的形式词才是名字的
+    终点。因此名字要一直延伸到本串里最后一个形式词为止——
+    中间那段文字若出现了新主体的起点（连接词），就到此为止。
     """
-    for s in _SUFFIXES:
-        if text.startswith(s, end):
-            return end + len(s)
+    n = len(text)
+    changed = True
+    while changed:
+        changed = False
+        for s in _SUFFIXES:
+            if text.startswith(s, end):
+                end += len(s)
+                changed = True
+                break
+        if changed:
+            continue
+        seg_end = _segment_end(text, end)
+        seg = text[end:seg_end]
+        m = _SUFFIX_SEARCH_RE.search(seg)
+        if m and not _has_name_boundary(seg[:m.start()]):
+            end += m.end()
+            changed = True
     return end
 
 
+def _is_in_bracket(text: str, start: int, end: int) -> bool:
+    """候选名是否整个落在一对括号里（注解括号）。"""
+    if start <= 0 or end >= len(text):
+        return False
+    for op, cl in (("(", ")"), ("（", "）")):
+        if text[start - 1] == op and text[end] == cl:
+            return True
+    return False
+
+
+def _generic_fragment(name: str) -> bool:
+    """这个名字是不是通用片段，而不是公司名。
+
+    两种情形：
+    - 字号本身就是形式词：「研究院有限公司」「设计院有限公司」
+    - 字号剥掉行政区划后只剩行业词：「工程咨询有限公司」「北京工程有限公司」
+    """
+    core = name
+    for s in _ENTERPRISE_SUFFIXES:
+        if core.endswith(s) and len(core) > len(s):
+            core = core[: -len(s)]
+            break
+    if core != name and core in _ORG_FORM_WORDS:
+        return True
+    rest = core
+    for r in _REGIONS:
+        if rest.startswith(r):
+            rest = rest[len(r):]
+            break
+    if not rest:
+        return False
+    while rest:
+        for w in sorted(_INDUSTRY_WORDS, key=len, reverse=True):
+            if rest.startswith(w):
+                rest = rest[len(w):]
+                break
+        else:
+            return False
+    return True
+
+
 def extract_company_names(text: str) -> list[str]:
-    """抽取公司类名称，按出现顺序去重。"""
+    """抽取公司类名称，按出现顺序去重。
+
+    扫描是「跳到延伸后的末尾再继续」，不是 finditer 的逐个匹配：
+    名字延伸过去的那截文字若被重新匹配一次，就会凭空多出半个公司名
+    （「北京华信集团研究院有限公司」曾被切成「北京华信集团研究院」
+    与「研究院有限公司」两个名字）。
+    """
     out: list[str] = []
     seen: set[str] = set()
-    for m in _NAME_RE.finditer(text or ""):
+    text = text or ""
+    pos = 0
+    n = len(text)
+    while pos < n:
+        m = _NAME_RE.search(text, pos)
+        if not m:
+            break
+        end = _extend_over_suffix(text, m.end())
+        # 跳到延伸后的末尾，延伸过去的那截不再重新匹配
+        pos = max(end, m.end())
         prefix = _trim_prefix(m.group("pre"))
         if len(prefix) < 2:
             continue
         if _is_form_fragment(prefix) or prefix in _NON_NAME_WORDS:
             continue
-        end = _extend_over_suffix(text, m.end())
         name = _strip_unbalanced_parens(prefix + text[m.start("suf"):end])
+        if _generic_fragment(name):
+            continue
+        if _is_in_bracket(text, m.start(), end) and _ends_with_org_form(name):
+            # 注解括号里的内容不是主体：「（华信集团）北京华信科技有限公司」
+            continue
         key = normalize_name(name)
         if key in seen:
             continue
         seen.add(key)
         out.append(name)
     return out
+
+
+def _ends_with_org_form(name: str) -> bool:
+    for s in _ORG_FORM_WORDS:
+        if name.endswith(s):
+            return True
+    return False
 
 
 def _strip_suffix(name: str) -> str:
@@ -273,7 +415,28 @@ def _extra_head_is_clean(longer: str, shorter: str) -> bool:
     是强连接词，是句子碎片，应该算同一主体。
     """
     head = longer[: len(longer) - len(shorter)]
-    return not any(w in head for w in _WEAK_CONNECTORS)
+    if any(w in head for w in _WEAK_CONNECTORS):
+        return False
+    return not _ends_with_industry_word(head)
+
+
+def _ends_with_industry_word(core: str) -> bool:
+    return any(core.endswith(w) for w in _INDUSTRY_WORDS)
+
+
+def _is_plausible_short_form(core: str) -> bool:
+    """短的一方是不是像简称。
+
+    字号以行业词结尾时，它描述的是经营范围而不是字号本身，不能当简称：
+    「北京华信科技」不是「北京华信科技服务有限公司」的简称，是另一家公司。
+    其余情况要求短的一方真的像简称：不超过 3 个字，或以行政区划开头。
+    「中国建筑」既不短也不带行政区划，因此不能与「中国建筑科技」合并。
+    """
+    if _ends_with_industry_word(core):
+        return False
+    if len(core) <= 3:
+        return True
+    return _starts_with_region(core)
 
 
 def same_entity(a: str, b: str) -> bool:
@@ -283,8 +446,8 @@ def same_entity(a: str, b: str) -> bool:
     - 互为**后缀**且多出来的部分不含弱连接词：带连接词前缀的同一写法与干净写法
       （「由北京华信科技」）。多出来的若是「联合」「和」这类字号常用字
       （「联合网络通信」之于「网络通信」），则不是同一主体
-    - 互为**前缀**且较短一方像简称（≤3 字，或以行政区划开头）：
-      「北京华信」与「北京华信科技有限公司」
+    - 互为**前缀**且较短一方像简称：不超过 3 个字，或以行政区划开头，
+      且不以行业词结尾（否则是经营范围不同，不是简称）
 
     前缀关系不加限制会误并「中国建筑」与「中国建筑科技」，
     所以要求较短一方是简称形态。
@@ -299,15 +462,37 @@ def same_entity(a: str, b: str) -> bool:
         return False
     if longer.endswith(shorter) and _extra_head_is_clean(longer, shorter):
         return True
-    if longer.startswith(shorter) and (
-        len(shorter) <= 3 or _starts_with_region(shorter)
-    ):
+    if longer.startswith(shorter) and _is_plausible_short_form(shorter):
         return True
     return False
 
 
+def _groups_mergeable(a: dict, b: dict) -> bool:
+    """两组能否合并：两两互为同一主体。
+
+    这条规则与输入顺序无关：合并与否只取决于两组成员之间的两两关系，
+    不取决于谁先来。比「先到先得」严，不会因为先来的名字把后来的名字吸进来。
+    """
+    return all(
+        same_entity(x, y) for x in a["names"] for y in b["names"]
+    )
+
+
+def _canonicals(members: list[str]) -> list[str]:
+    """成员去弱连接词后的规范写法，按首次出现排序。"""
+    out: list[str] = []
+    for n in members:
+        c = canonical_name(n)
+        if c not in out:
+            out.append(c)
+    return out
+
+
 def group_variants(names: list[str]) -> list[dict]:
     """按主体聚类。
+
+    聚类结果与输入顺序无关。同样的名字集合，无论顺序如何，分组都一样——
+    否则同一批文档换个顺序跑，报告的结论就会变。
 
     返回 [{core, names, canonicals}]：
     - names      该主体的原始写法，按首次出现排序
@@ -316,24 +501,52 @@ def group_variants(names: list[str]) -> list[dict]:
                  「与上海远大信息技术有限公司」和「上海远大信息技术有限公司」
                  规范写法相同，不算两种写法
     - core       成员中最长的核心字号
+
+    先按规范核心字号精确分组，再按显式的、顺序无关的规则跨组合并：
+    两组之间每一对名字都互为同一主体时才合并。
     """
+    unique = list(dict.fromkeys(names))
+    order = {n: i for i, n in enumerate(unique)}
+
+    def sort_key(n: str) -> tuple:
+        return (canonical_core(n), canonical_name(n), n)
+
+    buckets: dict[str, list[str]] = {}
+    for n in sorted(unique, key=sort_key):
+        buckets.setdefault(canonical_core(n), []).append(n)
+
     groups: list[dict] = []
-    for name in names:
-        placed = False
-        for g in groups:
-            if same_entity(name, g["names"][0]):
-                g["names"].append(name)
-                canon = canonical_name(name)
-                if canon not in g["canonicals"]:
-                    g["canonicals"].append(canon)
-                placed = True
-                break
-        if not placed:
-            groups.append({
-                "core": core_key(name),
-                "names": [name],
-                "canonicals": [canonical_name(name)],
-            })
+    for core in sorted(buckets):
+        members = sorted(buckets[core], key=lambda n: order[n])
+        groups.append({
+            "core": core,
+            "names": members,
+            "canonicals": _canonicals(members),
+        })
+
+    # 跨组合并：候选对按 core 排序，合并结果与输入顺序无关
+    while True:
+        best = None
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                if not _groups_mergeable(groups[i], groups[j]):
+                    continue
+                key = (groups[i]["core"], groups[j]["core"])
+                if best is None or key < best[0]:
+                    best = (key, i, j)
+        if best is None:
+            break
+        _, i, j = best
+        merged = sorted(groups[i]["names"] + groups[j]["names"],
+                        key=lambda n: order[n])
+        groups[i] = {
+            "core": min(groups[i]["core"], groups[j]["core"]),
+            "names": merged,
+            "canonicals": _canonicals(merged),
+        }
+        del groups[j]
+
     for g in groups:
         g["core"] = max((core_key(n) for n in g["names"]), key=len)
+    groups.sort(key=lambda g: g["core"])
     return groups

@@ -49,12 +49,29 @@ def test_center_is_not_a_company_form():
 def test_form_fragment_guard_keeps_equal_length_names():
     # 形式词的严格前缀才是片段，长度相等的是真实字号
     assert extract_company_names("研究中心有限公司") == ["研究中心有限公司"]
-    assert extract_company_names("设计院有限公司") == ["设计院有限公司"]
     # 「股份」是「股份有限公司」的严格前缀，是片段：不会单独抽出一个
     # 叫「股份有限公司」的主体（名字整体延伸到「股份有限公司」）
     names = extract_company_names("中信建设集团股份有限公司")
     assert "股份有限公司" not in names
     assert names == ["中信建设集团股份有限公司"]
+
+
+def test_bare_form_word_is_not_a_company_name():
+    # 字号本身就是形式词时，这是通用片段不是公司名。
+    # 「设计院有限公司」「研究院有限公司」都不是公司名，真实的公司名
+    # 字号更长时不受影响
+    assert extract_company_names("中国建筑设计院有限公司") == ["中国建筑设计院有限公司"]
+    assert extract_company_names("设计院有限公司") == []
+    assert extract_company_names("研究院有限公司") == []
+    assert extract_company_names("事务所有限公司") == []
+
+
+def test_generic_industry_fragment_is_not_a_company_name():
+    # 字号剥掉行政区划后只剩行业词，是通用片段
+    assert extract_company_names("工程咨询有限公司") == []
+    assert extract_company_names("北京工程有限公司") == []
+    # 字号里还有实义词就不是片段
+    assert extract_company_names("华信工程咨询有限公司") == ["华信工程咨询有限公司"]
 
 
 def test_core_key_strips_suffix_and_region():
@@ -189,3 +206,74 @@ def test_group_variants_canonicals_ignore_leading_weak_connector():
 def test_canonical_core_collapses_weak_prefix():
     assert canonical_core("与上海远大信息技术有限公司") == "上海远大信息技术"
     assert canonical_core("上海远大信息技术有限公司") == "上海远大信息技术"
+
+
+# --- 复查轮次：主体抽取与聚类的 Critical 缺陷 ---
+
+def test_name_is_not_split_at_an_inner_form_word():
+    # 「研究院」在名字中间，它是字号的一部分。
+    # 延伸过去的尾巴若被重新匹配一次，就会多出半个公司名。
+    assert extract_company_names("北京华信集团研究院有限公司") == [
+        "北京华信集团研究院有限公司"
+    ]
+    assert extract_company_names("中铁建工集团北京工程有限公司") == [
+        "中铁建工集团北京工程有限公司"
+    ]
+    assert extract_company_names("华夏集团工程咨询有限公司") == [
+        "华夏集团工程咨询有限公司"
+    ]
+
+
+def test_two_names_in_one_run_are_not_merged():
+    # 两个字之间有连接词，是两个主体，不能延伸成一个名字
+    assert extract_company_names(
+        "北京华信科技有限公司和上海远大信息技术有限公司联合实施"
+    ) == ["北京华信科技有限公司", "上海远大信息技术有限公司"]
+
+
+def test_industry_variant_is_a_different_company():
+    # 经营范围不同的两家公司，不能因为一个以行业词结尾就并成一家
+    assert not same_entity("北京华信科技有限公司", "北京华信科技服务有限公司")
+    assert not same_entity("北京华信科技有限公司", "北京华信科技发展有限公司")
+    # 真·简称仍然合并
+    assert same_entity("北京华信科技有限公司", "北京华信")
+    # 行业词开头的「中国建筑」不是「中国建筑科技」的简称
+    assert not same_entity("中国建筑", "中国建筑科技")
+
+
+def test_group_variants_partition_is_order_independent():
+    # 同样的名字集合，顺序不同不能得出不同的分组
+    import itertools
+
+    names = [
+        "北京华信科技有限公司",
+        "北京华信科技服务有限公司",
+        "北京华信科技发展有限公司",
+    ]
+    partitions = set()
+    for perm in itertools.permutations(names):
+        groups = group_variants(list(perm))
+        partitions.add(frozenset(frozenset(g["names"]) for g in groups))
+    assert len(partitions) == 1, "聚类结果随输入顺序变化"
+    groups = group_variants(names)
+    assert len(groups) == 3
+    for g in groups:
+        assert len(g["names"]) == 1
+
+
+def test_agent_word_is_a_weak_connector():
+    # 「代理」是字号的一部分（「深圳市代理记账服务有限公司」），
+    # 但句子层面的「代理」后面跟的是主体，要裁掉
+    assert extract_company_names("深圳市代理记账服务有限公司") == [
+        "深圳市代理记账服务有限公司"
+    ]
+    assert extract_company_names("我方代理北京华信科技有限公司") == [
+        "北京华信科技有限公司"
+    ]
+
+
+def test_annotation_bracket_content_is_not_a_second_entity():
+    # 注解括号里的「华信集团」不是主体，不能当成第二个主体名
+    assert extract_company_names("（华信集团）北京华信科技有限公司") == [
+        "北京华信科技有限公司"
+    ]
