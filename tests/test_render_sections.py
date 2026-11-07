@@ -272,3 +272,30 @@ def test_build_html_tolerates_non_dict_locator():
         "baseline_diff": None,
     })
     assert "错别字" in html
+
+
+def test_section1_counts_both_entity_categories():
+    """确定性层的「主体串写」与语义层的「主体名误用」都要计入混主体数。"""
+    cons = _consistency()
+    cons["issues"] = [{
+        "id": "k" * 16, "severity": "P0", "category": "主体串写",
+        "detector": "deterministic", "confidence": "疑似 · 需人工核实",
+        "file": "a.docx", "locator": {"type": "file"},
+        "quote": "甲公司", "description": "出现两个主体", "suggestion": "确认归属",
+    }]
+    html = build_html({
+        "manifest": _manifest(), "consistency": cons,
+        "findings": [_finding("主体名误用", severity="P1")],
+        "baseline_diff": None,
+    })
+    assert "疑似混主体问题 2 处" in html
+
+
+def test_section7_rules_list_both_entity_categories():
+    """§7 的规则表要同时列出确定性与语义两个主体类别的判定标准。"""
+    html = build_html({
+        "manifest": _manifest(), "consistency": _consistency(),
+        "findings": [], "baseline_diff": None,
+    })
+    assert "主体串写" in html
+    assert "主体名误用" in html

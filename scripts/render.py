@@ -19,6 +19,12 @@ from schema import validate_findings
 
 SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
 
+# 两个主体相关类别，分属两层，不能互相替代：
+# 「主体串写」是确定性层的文件级 P0（该文件出现多个主体）；
+# 「主体名误用」是语义层的段落级问题（某一句里的名称与该文件主体不符）。
+# §1 的混主体计数与 §7 的规则表都要覆盖两者。
+_ENTITY_CATEGORIES = ("主体串写", "主体名误用")
+
 
 def esc(v) -> str:
     return html.escape("" if v is None else str(v), quote=True)
@@ -161,6 +167,7 @@ def _section_1(consistency, findings, counts) -> str:
 
     entity_names = consistency.get("entities", {}).get("names", [])
     todo = [f for f in all_issues if f.get("category") == "待补充内容"]
+    mixed = sum(1 for f in all_issues if f.get("category") in _ENTITY_CATEGORIES)
 
     out = [f"<h2 id='s1'>§1 结论概览</h2>"]
     out.append('<div class="counts">')
@@ -176,7 +183,7 @@ def _section_1(consistency, findings, counts) -> str:
     out.append("<h3>重点提示</h3>")
     out.append(
         f"<p>识别到主体名称 {len(entity_names)} 个，"
-        f"疑似混主体问题 {sum(1 for f in all_issues if f.get('category') == '主体串写')} 处，"
+        f"疑似混主体问题 {mixed} 处，"
         f"待补充内容 {len(todo)} 处。</p>"
     )
     return "".join(out)
@@ -425,7 +432,8 @@ _RULES = [
     ("图表题注体例", "同一文件内图表题注写法混用"),
     ("表格体例", "表头写法不统一、缺重复表头"),
     ("主体名称", "同一主体出现多种名称写法"),
-    ("主体串写", "同一文件内出现多个不同主体名称"),
+    ("主体串写", "同一文件内出现多个不同主体名称（确定性层，文件级 P0）"),
+    ("主体名误用", "段落或句子中出现了疑似属于另一主体的名称、地址、资质、业绩或联系方式（语义层，段落级）"),
     ("数字与单位", "货币单位、日期格式混用"),
     ("引用标记", "引用标记写法混用、编号越界"),
     ("列表与编号", "有序列表编号方式混用"),
@@ -444,8 +452,8 @@ _RULES = [
 _DEPTH_COVERAGE = {
     "quick": "阶段①全量确定性检查（含主体串写、主体名称、字体与体例检查）已做；"
              "阶段②只做了错别字与标点扫描。"
-             "未做语义互查：前后矛盾、引用张冠李戴、待补充内容、数字逻辑、"
-             "表述歧义、术语一致性等类别本次未覆盖。",
+             "未做语义互查：前后矛盾、主体名误用、引用张冠李戴、待补充内容、"
+             "数字逻辑、表述歧义、术语一致性等类别本次未覆盖。",
     "standard": "阶段①全量确定性检查 + 阶段②九类语义检查全做。",
     "deep": "阶段①全量确定性检查 + 阶段②逐段细读，邻接窗口更大，跨片对照加强。",
 }
