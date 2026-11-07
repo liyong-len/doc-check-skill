@@ -1426,6 +1426,28 @@ def test_same_entity_uses_suffix_not_prefix():
     assert not same_entity("华信科技有限公司", "华信科技信息有限公司")
 
 
+def test_short_form_and_full_name_are_same_entity():
+    assert same_entity("北京华信", "北京华信科技有限公司")
+
+
+def test_repeated_suffix_layer_is_one_entity():
+    assert same_entity("中国建筑集团股份有限公司", "中国建筑集团")
+
+
+def test_leading_weak_connector_only_stripped_when_long_enough():
+    # 真实字号以弱连接词开头时不能被裁
+    assert canonical_core("与信科技有限公司") == "与信科技"
+    assert canonical_core("同创股份有限公司") == "同创"
+    # 连接词后是行政区划开头时才裁
+    assert canonical_core("与上海远大信息技术有限公司") == "上海远大信息技术"
+
+
+def test_paren_group_is_consumed_atomically():
+    assert extract_company_names("北京华信(集团)有限公司") == ["北京华信(集团)有限公司"]
+    assert extract_company_names("北京华信（集团）科技有限公司") == ["北京华信（集团）科技有限公司"]
+    assert extract_company_names("（北京华信科技有限公司）") == ["北京华信科技有限公司"]
+
+
 def test_parentheses_in_company_names():
     assert extract_company_names("北京华信(集团)有限公司") == ["北京华信(集团)有限公司"]
     assert extract_company_names("北京华信（集团）科技有限公司") == ["北京华信（集团）科技有限公司"]
@@ -1513,7 +1535,7 @@ _NON_NAME_WORDS = {
 }
 
 _NAME_RE = re.compile(
-    r"(?P<pre>[一-龥A-Za-z0-9·（）()]{2,30}?)"
+    r"(?P<pre>(?:[一-龥A-Za-z0-9·]|\([^()（）]{1,20}\)|（[^()（）]{1,20}）){2,30}?)"
     r"(?P<suf>" + "|".join(map(re.escape, _SUFFIXES)) + r")"
 )
 
@@ -1548,12 +1570,20 @@ def _strip_unbalanced_parens(name: str) -> str:
     return name
 
 
-def _trim_prefix(prefix: str) -> str:
-    """切掉前缀中的强连接词，取最短的合格切分作为字号主体。
+def _starts_with_region(text: str) -> bool:
+    """是否以行政区划开头。"""
+    return any(text.startswith(r) for r in _REGIONS)
 
-    枚举每个强连接词的出现位置，切掉它及其之前的部分，在长度不小于
-    _MIN_PREFIX_LEN 的候选中取最短的一个——也就是最靠后的那个连接词，
-    同时跳过切完太短的候选。长度都不合格时完全不裁剪。
+
+def _trim_prefix(prefix: str) -> str:
+    """切掉前缀中的连接词，取最短的合格切分作为字号主体。
+
+    强连接词（由/甲方/乙方/受托/委托…）其后几乎必然是字号，随时可裁。
+    弱连接词（与/和/同/联合/为…）本身也是字号的一部分，
+    只有在裁完剩下的是行政区划开头时才裁——
+    否则「和而泰」「中国联合」「清华同方」这类字号会被截断。
+
+    候选长度随连接词位置右移而变短，取最短即取最靠后的合格连接词。
     """
     best = None
     for conn in _STRONG_CONNECTORS:
@@ -1564,6 +1594,17 @@ def _trim_prefix(prefix: str) -> str:
                 break
             candidate = prefix[idx + len(conn):].strip()
             if len(candidate) >= _MIN_PREFIX_LEN:
+                if best is None or len(candidate) < len(best):
+                    best = candidate
+            start = idx + 1
+    for conn in _WEAK_CONNECTORS:
+        start = 0
+        while True:
+            idx = prefix.find(conn, start)
+            if idx < 0:
+                break
+            candidate = prefix[idx + len(conn):].strip()
+            if len(candidate) >= _MIN_PREFIX_LEN and _starts_with_region(candidate):
                 if best is None or len(candidate) < len(best):
                     best = candidate
             start = idx + 1
@@ -1592,9 +1633,15 @@ def extract_company_names(text: str) -> list[str]:
 
 
 def _strip_suffix(name: str) -> str:
-    for s in _SUFFIXES:
-        if name.endswith(s):
-            return name[: -len(s)]
+    """去掉公司词尾，可能叠层：「XX集团股份有限公司」→「XX集团」→「XX」。"""
+    changed = True
+    while changed:
+        changed = False
+        for s in _SUFFIXES:
+            if name.endswith(s) and len(name) > len(s):
+                name = name[: -len(s)]
+                changed = True
+                break
     return name
 
 
@@ -1606,7 +1653,7 @@ def _strip_region(name: str) -> str:
 
 
 def core_key(name: str) -> str:
-    """核心字号：去掉公司词尾与行政区划前缀后的剩余部分。
+    """核心字号：去掉公司词尾（可叠层）与行政区划前缀后的剩余部分。
 
     刻意不剥离行业词。行业词参与主体区分：
     「华信科技」与「华信信息技术」是两个不同主体，剥掉行业词会把它们混为一谈。
@@ -1618,12 +1665,16 @@ def core_key(name: str) -> str:
 
 
 def _strip_leading_weak(core: str) -> str:
-    """去掉字号开头的弱连接词。"""
+    """去掉字号开头的弱连接词。
+
+    只有在去掉后仍剩至少 _MIN_PREFIX_LEN 个字时才裁，
+    否则「与信科技」「同创」这类真实字号会被裁成「信科技」「创」。
+    """
     changed = True
     while changed and core:
         changed = False
         for w in _WEAK_CONNECTORS:
-            if core.startswith(w) and len(core) > len(w):
+            if core.startswith(w) and len(core) - len(w) >= _MIN_PREFIX_LEN:
                 core = core[len(w):]
                 changed = True
                 break
@@ -1631,12 +1682,15 @@ def _strip_leading_weak(core: str) -> str:
 
 
 def canonical_core(name: str) -> str:
-    """主体标识：核心字号再去掉开头的弱连接词。
+    """主体标识：去掉公司词尾，再去掉开头的弱连接词。**保留行政区划前缀**。
 
-    「与上海远大信息技术有限公司」与「上海远大信息技术有限公司」
-    的 canonical_core 相同，判定混主体时不能算成两个主体。
+    保留区划是为了区分「中国建筑」与「中国建筑科技」：
+    两者字号互为前缀，只有保留区划才能看出前者不是简称。
     """
-    return _strip_leading_weak(core_key(name))
+    n = normalize_name(name)
+    n = _strip_suffix(n)
+    n = _strip_leading_weak(n)
+    return n
 
 
 def canonical_name(name: str) -> str:
@@ -1650,10 +1704,13 @@ def canonical_name(name: str) -> str:
 def same_entity(a: str, b: str) -> bool:
     """两个名称是否指向同一主体。
 
-    用**后缀**关系判定：核心字号互为后缀即视为同一主体。
-    前缀关系会误并「中国建筑」与「中国建筑科技」这两个不同主体，
-    后缀关系则能把带连接词前缀的同一主体（「由北京华信科技」）
-    与干净写法归到一起，同时保住简称（「北京华信」与「北京华信科技有限公司」）。
+    核心字号相等即同一主体。此外两种关系也算：
+    - 互为**后缀**：带连接词前缀的同一写法与干净写法（「由北京华信科技」）
+    - 互为**前缀**且较短一方像简称（≤3 字，或以行政区划开头）：
+      「北京华信」与「北京华信科技有限公司」
+
+    前缀关系不加限制会误并「中国建筑」与「中国建筑科技」，
+    所以要求较短一方是简称形态。
     """
     ca, cb = canonical_core(a), canonical_core(b)
     if not ca or not cb:
@@ -1661,7 +1718,13 @@ def same_entity(a: str, b: str) -> bool:
     if ca == cb:
         return True
     shorter, longer = sorted([ca, cb], key=len)
-    if len(shorter) >= 2 and longer.endswith(shorter):
+    if len(shorter) < 2:
+        return False
+    if longer.endswith(shorter):
+        return True
+    if longer.startswith(shorter) and (
+        len(shorter) <= 3 or _starts_with_region(shorter)
+    ):
         return True
     return False
 
@@ -2675,8 +2738,8 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
         ))
 
     for doc in documents:
-        cores = {canonical_core(n) for n in per_file[doc["file"]]}
-        if len(cores) >= 2:
+        groups = group_variants(per_file[doc["file"]])
+        if len(groups) >= 2:
             shown = sorted({n for n in per_file[doc["file"]]})
             issues.append(make_finding(
                 severity="P0", category="主体串写", detector="deterministic",
@@ -2684,7 +2747,7 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
                 locator={"type": "file"},
                 quote=shown[0],
                 description=(
-                    f"该文件出现 {len(cores)} 个不同主体名称："
+                    f"该文件出现 {len(groups)} 个不同主体名称："
                     + "、".join(shown[:5])
                     + "。若本文件应只涉及单一主体，则存在主体写混。"
                 ),
