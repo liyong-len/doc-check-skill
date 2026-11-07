@@ -1448,6 +1448,20 @@ def test_paren_group_is_consumed_atomically():
     assert extract_company_names("（北京华信科技有限公司）") == ["北京华信科技有限公司"]
 
 
+def test_org_form_suffix_is_not_stripped():
+    # 研究院/设计院不是企业形式，剥掉会把不同主体并到一起
+    assert canonical_core("中国建筑设计院有限公司") == "中国建筑设计院"
+    assert canonical_core("中国建筑设计院") == "中国建筑设计院"
+    assert canonical_core("中国建筑有限公司") == "中国建筑"
+
+
+def test_organization_connectors_are_not_stripped_from_canonical():
+    # 同/和/联合/协作在字号里太常见，不能剥
+    assert canonical_core("联合网络通信有限公司") == "联合网络通信"
+    assert canonical_core("和信科技有限公司") == "和信科技"
+    assert canonical_core("同创股份有限公司") == "同创"
+
+
 def test_parentheses_in_company_names():
     assert extract_company_names("北京华信(集团)有限公司") == ["北京华信(集团)有限公司"]
     assert extract_company_names("北京华信（集团）科技有限公司") == ["北京华信（集团）科技有限公司"]
@@ -1528,6 +1542,20 @@ _WEAK_CONNECTORS = [
 # 裁剪后至少要剩下的字号长度。太短说明连接词本身是字号的一部分
 # （「华为技术」中的「为」），此时不裁剪。
 _MIN_PREFIX_LEN = 4
+
+# 计算核心字号时剥离的词尾：只有企业形式词。
+# 研究院/研究所/设计院/事务所不是企业形式，剥它们会把
+# 「中国建筑设计院」与「中国建筑」并成同一个主体。
+_CORE_SUFFIXES = [
+    "股份有限公司", "有限责任公司", "集团有限公司", "有限公司", "集团",
+]
+
+# 计算规范写法时可以剥掉的弱连接词。
+# 「同」「和」「联合」「协作」在字号里极常见（和而泰、中国联合、清华同方），
+# 剥掉它们会把「联合网络通信」缩成「网络通信」，与真·子公司「网络通信」撞车。
+_CANONICAL_STRIP_CONNECTORS = [
+    "为", "经", "并", "及", "与", "是", "从", "给", "向", "对", "或",
+]
 
 # 纯行业词，不能单独作为字号。出现「科技有限公司」这种名字说明是切错了。
 _NON_NAME_WORDS = {
@@ -1633,11 +1661,15 @@ def extract_company_names(text: str) -> list[str]:
 
 
 def _strip_suffix(name: str) -> str:
-    """去掉公司词尾，可能叠层：「XX集团股份有限公司」→「XX集团」→「XX」。"""
+    """去掉公司词尾，可能叠层：「XX集团股份有限公司」→「XX集团」→「XX」。
+
+    只剥企业形式词。研究院/研究所/设计院/事务所不是企业形式，
+    剥它们会把「中国建筑设计院」与「中国建筑」并成同一个主体。
+    """
     changed = True
     while changed:
         changed = False
-        for s in _SUFFIXES:
+        for s in _CORE_SUFFIXES:
             if name.endswith(s) and len(name) > len(s):
                 name = name[: -len(s)]
                 changed = True
@@ -1673,7 +1705,7 @@ def _strip_leading_weak(core: str) -> str:
     changed = True
     while changed and core:
         changed = False
-        for w in _WEAK_CONNECTORS:
+        for w in _CANONICAL_STRIP_CONNECTORS:
             if core.startswith(w) and len(core) - len(w) >= _MIN_PREFIX_LEN:
                 core = core[len(w):]
                 changed = True
