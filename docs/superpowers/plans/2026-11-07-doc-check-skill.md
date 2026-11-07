@@ -1318,8 +1318,10 @@ def test_core_key_strips_suffix_and_region():
     assert core_key("华信科技有限公司") == "华信科技"
 
 
-def test_core_key_strips_industry_suffix():
-    assert core_key("华信信息科技有限公司") == "华信"
+def test_core_key_keeps_industry_word():
+    # 行业词参与主体区分，不剥离
+    assert core_key("华信信息科技有限公司") == "华信信息科技"
+    assert core_key("北京华信科技有限公司") != core_key("北京华信信息技术有限公司")
 
 
 def test_same_entity_detects_prefix_short_form():
@@ -1373,16 +1375,29 @@ _REGIONS = [
     "重庆", "台湾", "香港", "澳门",
 ]
 
-# 行业后缀（按长度降序）
-_INDUSTRIES = [
-    "信息技术", "网络科技", "智能科技", "生物医药", "医疗器械", "电子科技",
-    "科技", "工程", "技术", "咨询", "管理", "投资", "贸易", "建筑", "医疗",
-    "教育", "传媒", "实业", "控股",
+# 连接词：用于把「本项目由北京华信科技有限公司」中的前缀裁掉
+_CONNECTORS = [
+    "以及", "并且", "联合", "协作", "采购方", "招标人", "招标代理", "甲方", "乙方",
+    "受托", "委托", "由", "是", "与", "和", "及", "向", "为", "对", "给", "经", "从",
+    "同", "并", "或",
 ]
 
 _NAME_RE = re.compile(
-    r"[一-龥A-Za-z0-9·（()）]{2,30}?(?:" + "|".join(map(re.escape, _SUFFIXES)) + r")"
+    r"(?P<pre>[一-龥A-Za-z0-9·]{2,30}?)"
+    r"(?P<suf>股份有限公司|有限责任公司|集团有限公司|有限公司|集团|研究院|研究所|设计院|事务所|工程中心|中心)"
 )
+
+
+def _trim_prefix(prefix: str) -> str:
+    """切掉前缀中的最后一个连接词，取其后的部分作为字号主体。"""
+    cut = -1
+    for conn in _CONNECTORS:
+        idx = prefix.rfind(conn)
+        if idx >= 0:
+            cut = max(cut, idx + len(conn))
+    if cut >= 0:
+        prefix = prefix[cut:]
+    return prefix.strip()
 
 
 def extract_company_names(text: str) -> list[str]:
@@ -1390,14 +1405,15 @@ def extract_company_names(text: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for m in _NAME_RE.finditer(text or ""):
-        raw = m.group(0).strip("（）()（） 、，。；;：:")
-        if len(raw) < 4:
+        prefix = _trim_prefix(m.group("pre"))
+        if len(prefix) < 2:
             continue
-        key = normalize_name(raw)
+        name = prefix + m.group("suf")
+        key = normalize_name(name)
         if key in seen:
             continue
         seen.add(key)
-        out.append(raw)
+        out.append(name)
     return out
 
 
@@ -1415,19 +1431,15 @@ def _strip_region(name: str) -> str:
     return name
 
 
-def _strip_industry(name: str) -> str:
-    for i in _INDUSTRIES:
-        if name.endswith(i) and len(name) > len(i):
-            return name[: -len(i)]
-    return name
-
-
 def core_key(name: str) -> str:
-    """核心字号：去掉词尾、区划前缀、行业后缀。"""
+    """核心字号：去掉公司词尾与行政区划前缀后的剩余部分。
+
+    刻意不剥离行业词。行业词参与主体区分：
+    「华信科技」与「华信信息技术」是两个不同主体，剥掉行业词会把它们混为一谈。
+    """
     n = normalize_name(name)
     n = _strip_suffix(n)
     n = _strip_region(n)
-    n = _strip_industry(n)
     return n
 
 
@@ -4060,7 +4072,7 @@ Expected: FAIL，references 目录不存在
 表头行写法不统一、跨页表格缺少重复表头。xlsx 的表头行取首行非空且下方存在数据的行。
 
 ## 主体名称
-同一主体出现两种以上名称写法。变体判定基于核心字号：名称去掉公司词尾、行政区划前缀、行业后缀后的剩余部分；核心字号相同，或较短者是较长者的前缀且不短于 3 个字符，视为同一主体。
+同一主体出现两种以上名称写法。变体判定基于核心字号：名称去掉公司词尾与行政区划前缀后的剩余部分；核心字号相同，或较短者是较长者的前缀且不短于 3 个字符，视为同一主体。行业词不剥离，「华信科技」与「华信信息技术」是两个不同主体。
 
 ## 主体串写
 同一文件内出现两个及以上不同核心字号的主体名称即报。因无外部依据，置信度为「疑似 · 需人工核实」，不升级为确定。
@@ -4175,8 +4187,14 @@ def test_skill_md_forbids_modifying_documents():
 
 def test_skill_md_lists_categories():
     text = _read("SKILL.md")
-    for cat in ["错别字", "前后矛盾", "主体串写", "张冠李戴", "待补充"]:
+    for cat in ["错别字", "前后矛盾", "张冠李戴", "待补充"]:
         assert cat in text, cat
+
+
+def test_skill_md_points_at_content_rules():
+    text = _read("SKILL.md")
+    assert "references/content-rules.md" in text
+    assert "references/severity.md" in text
 
 
 def test_agents_md_points_to_skill():
@@ -4961,11 +4979,13 @@ SAMPLES = Path(__file__).resolve().parent / "samples"
 
 def make_docx(path: Path) -> None:
     d = docx.Document()
-    d.add_heading("北京华信科技有限公司投标文件", level=1)
+    d.add_heading("第一章 投标文件", level=1)
     d.add_heading("技术方案", level=2)
+    d.add_paragraph("本文件由北京华信科技有限公司编制。")
     p = d.add_paragraph("本公司具备相关资质，帐号信息见附件。")
     p.runs[0].font.size = Pt(12)
     d.add_paragraph("一、总体要求")
+    d.add_paragraph("1. 适用范围")
     d.add_paragraph("本项目工期为 60 日历天。")
     d.add_paragraph("相关依据[1]说明本方案满足要求。")
     d.add_paragraph("如图1-1所示的设备清单。")
