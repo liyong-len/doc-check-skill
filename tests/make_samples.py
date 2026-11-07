@@ -125,11 +125,50 @@ def make_md(path: Path) -> None:
     )
 
 
+# PDF 样本的正文。中文字用 reportlab 的 CID 字体（STSong-Light），
+# 不依赖机器上装了什么字体文件，生成的样本在任何机器上都一样。
+PDF_LINES = [
+    "投标文件",
+    "本文件由北京华信科技有限公司编制。",
+    "本项目金额为 120 万元。",
+    "本次费用 3000 元。",
+    "签署日期 2024年1月1日，生效日期 2024-01-01。",
+    "协作方为上海远大信息技术有限公司。",
+    "本公司具备相关资质，帐号信息见附件。",
+]
+
+
+def make_pdf(path: Path) -> None:
+    """生成 PDF 样本。
+
+    PDF 不携带可靠的样式语义，格式类结论一律低置信度；
+    但文字层面的检查（货币单位、日期格式、主体名）照常跑，
+    所以样本里埋的也是这三类问题。
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfgen import canvas
+
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    pdf = canvas.Canvas(str(path), pagesize=A4)
+    pdf.setFont("STSong-Light", 12)
+    y = 760
+    for line in PDF_LINES:
+        pdf.drawString(72, y, line)
+        y -= 26
+    pdf.showPage()
+    pdf.setFont("Helvetica", 11)
+    pdf.drawString(72, 760, "Appendix: equipment list.")
+    pdf.save()
+
+
 def main() -> None:
     SAMPLES.mkdir(parents=True, exist_ok=True)
     make_docx(SAMPLES / "sample_company.docx")
     make_xlsx(SAMPLES / "sample_price.xlsx")
     make_md(SAMPLES / "sample_note.md")
+    make_pdf(SAMPLES / "sample_notice.pdf")
     print(f"样本已生成到 {SAMPLES}")
 
 

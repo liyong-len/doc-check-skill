@@ -108,8 +108,11 @@ def test_end_to_end_report_drops_finding_when_findings_empty(tmp_path):
     assert FINDING["description"] not in html
     assert FINDING["suggestion"] not in html
     assert "前后矛盾（1）" not in html
-    # 确定性层的结论仍在：报告不是空的，只是少了模型侧的条目
-    assert "字体一致性" in html
+    # 确定性层的结论仍在：报告不是空的，只是少了模型侧的条目。
+    # 断言必须打在「只有这条确定性发现才有」的文字上：
+    # 「字体一致性」是 §7 规则表里的一行，恒在，断言它等于没断言；
+    # 「本处为「10.5」」是字号偏离那条确定性发现的说明，别的条目不会带它。
+    assert "本处为「10.5」" in html
 
 
 def test_end_to_end_catches_known_defects(tmp_path):

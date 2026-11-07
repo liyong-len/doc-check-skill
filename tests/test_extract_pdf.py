@@ -1,6 +1,26 @@
+"""PDF 抽取器的测试。
+
+reportlab 是**开发依赖**（requirements-dev.txt），只装 requirements.txt 的环境
+里没有它。这里的跳过必须看得见：静默跳过会让「PDF 抽取没人测」这件事
+被当成「PDF 抽取测过了」。
+"""
+import warnings
+
 import pytest
 
-reportlab = pytest.importorskip("reportlab")
+try:
+    import reportlab  # noqa: F401
+except ImportError:
+    warnings.warn(
+        "reportlab 没装，本文件的 PDF 测试全部跳过。"
+        "reportlab 是开发依赖（requirements-dev.txt），"
+        "只装 requirements.txt 的环境跑不了这些测试。"
+        "请执行：pip install -r requirements-dev.txt"
+    )
+    pytest.skip(
+        "reportlab 没装（开发依赖），PDF 抽取测试未运行",
+        allow_module_level=True,
+    )
 
 from extractors.pdf import extract_pdf
 
