@@ -65,9 +65,23 @@ def finding_id(file: str, category: str, locator: dict, quote: str) -> str:
 
 
 def category_key(locator: dict) -> str:
-    """locator 的稳定字符串形式，用于指纹计算。"""
+    """locator 的稳定字符串形式，用于指纹计算。
+
+    收录 locator 的全部键（按键名排序），保证任何携带信息的键都参与指纹，
+    避免两个不同问题落到同一个 finding_id 上。键名排序保证不同运行、
+    不同字典插入顺序下结果一致。
+    """
     parts = [str(locator.get("type", ""))]
-    for key in ("index", "row", "col", "section_path"):
-        if key in locator and locator[key] is not None:
-            parts.append(f"{key}={locator[key]}")
+    parts += [
+        f"{key}={_locator_value(locator[key])}"
+        for key in sorted(locator)
+        if key != "type" and locator[key] is not None
+    ]
     return "/".join(parts)
+
+
+def _locator_value(value: Any) -> str:
+    """locator 值的稳定字符串形式；容器按排序键序列化，避免插入顺序影响指纹。"""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return str(value)
