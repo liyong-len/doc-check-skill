@@ -6,6 +6,10 @@ import importlib
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from common import force_utf8_stdio
+
 REQUIRED_MODULES = ["docx", "openpyxl", "pdfplumber", "lxml"]
 MIN_PYTHON = (3, 9)
 
@@ -59,6 +63,7 @@ def check() -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="doc-check 环境自检")
     parser.parse_args(argv)
+    force_utf8_stdio()
     r = check()
     print(f"Python：{r['python']}")
     print(f"虚拟环境：{r['venv'] or '未找到'}")
