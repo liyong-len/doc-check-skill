@@ -49,3 +49,8 @@ ALL_CATEGORIES = SEMANTIC_CATEGORIES + DETERMINISTIC_CATEGORIES
 def is_known_category(value: object) -> bool:
     """这个类别是不是清单里的合法取值。"""
     return str(value or "").strip() in ALL_CATEGORIES
+
+
+def normalize_category(value: object) -> str:
+    """类别字面量：去掉首尾空白。"""
+    return str(value or "").strip()

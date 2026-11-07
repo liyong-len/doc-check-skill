@@ -4,7 +4,7 @@ id 是派生字段（见 derive_ids），模型不必写，校验也不要求。
 """
 from __future__ import annotations
 
-from categories import ALL_CATEGORIES
+from categories import is_known_category, normalize_category
 from common import finding_id
 
 SEVERITIES = ["P0", "P1", "P2", "P3"]
@@ -97,8 +97,8 @@ def validate_findings(data: list[dict]) -> list[str]:
             errors.append(f"{prefix}：detector 非法 {f.get('detector')!r}，允许 {DETECTORS}")
         if f.get("confidence") not in CONFIDENCES:
             errors.append(f"{prefix}：confidence 非法 {f.get('confidence')!r}，允许 {CONFIDENCES}")
-        category = str(f.get("category", "") or "").strip()
-        if "category" in f and category not in ALL_CATEGORIES:
+        category = normalize_category(f.get("category"))
+        if "category" in f and not is_known_category(category):
             errors.append(
                 f"{prefix}：category 非法 {category!r}，"
                 "只能取固定清单里的中文类别（语义层九个 + 确定性层十一个，"
