@@ -4729,6 +4729,26 @@ def test_content_rules_cover_all_nine_categories():
         assert cat in text, cat
 
 
+def test_severity_doc_introduces_no_extra_confidence_literals():
+    # 参考文档不得自造 schema 里没有的置信度字面量：
+    # 渲染器是按字面量分类展示的，文档与代码不一致会静默漏项
+    import re
+    text = _read("severity.md")
+    for literal in set(re.findall(r"「(确定[^」]*)」", text)):
+        assert literal in schema.CONFIDENCES, literal
+
+
+def test_content_rules_fixed_category_list_excludes_deterministic_category():
+    # 语义层的「主体名误用」与确定性层的「主体串写」是两个类别，
+    # 固定清单里若出现「主体串写」，智能体会对同一问题报两次
+    text = _read("content-rules.md")
+    line = [l for l in text.splitlines() if l.startswith("- category 取值固定为")]
+    assert line, "找不到固定类别清单"
+    assert "主体串写" not in line[0]
+    assert "主体名误用" in line[0]
+    assert "待补充内容" in line[0]   # render.py §5 按这个字面量过滤
+
+
 def test_format_rules_cover_all_ten_categories():
     text = _read("format-rules.md")
     for cat in ["字体一致性", "段落格式一致性", "标题层级体例", "图表题注体例",
