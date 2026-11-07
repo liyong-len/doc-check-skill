@@ -158,6 +158,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import json
 from pathlib import Path
 
+import hashlib
+
 from common import (
     finding_id,
     normalize_name,
@@ -191,6 +193,7 @@ def test_sha256_file_is_stable(tmp_path):
     p.write_bytes(b"abc")
     assert sha256_file(p) == sha256_file(p)
     assert len(sha256_file(p)) == 64
+    assert sha256_file(p) == hashlib.sha256(b"abc").hexdigest()
 
 
 def test_normalize_text_collapses_whitespace_and_fullwidth():
@@ -208,6 +211,24 @@ def test_finding_id_is_stable_and_length_16():
     b = finding_id("a.docx", "字体一致性", loc, "正文  片段")
     assert a == b
     assert len(a) == 16
+
+
+def test_finding_id_distinguishes_distinct_findings():
+    cat = "字体一致性"
+    loc = {"type": "paragraph", "index": 3}
+    base = finding_id("a.docx", cat, loc, "正文")
+    assert finding_id("b.docx", cat, loc, "正文") != base
+    assert finding_id("a.docx", "段落格式一致性", loc, "正文") != base
+    assert finding_id("a.docx", cat, {"type": "paragraph", "index": 4}, "正文") != base
+    assert finding_id("a.docx", cat, {**loc, "sheet": "s"}, "正文") != base
+
+
+def test_finding_id_is_stable_across_locator_key_order():
+    a = finding_id("a.docx", "字体一致性",
+                   {"type": "paragraph", "index": 3, "section_path": "第一章"}, "正文")
+    b = finding_id("a.docx", "字体一致性",
+                   {"section_path": "第一章", "index": 3, "type": "paragraph"}, "正文")
+    assert a == b
 ```
 
 - [ ] **Step 3: 运行测试确认失败**
@@ -286,12 +307,24 @@ def finding_id(file: str, category: str, locator: dict, quote: str) -> str:
 
 
 def category_key(locator: dict) -> str:
-    """locator 的稳定字符串形式，用于指纹计算。"""
+    """locator 的稳定字符串形式，用于指纹计算。
+
+    取全部 locator 键并按键名排序，避免固定白名单丢掉信息导致不同问题撞指纹。
+    """
     parts = [str(locator.get("type", ""))]
-    for key in ("index", "row", "col", "section_path"):
-        if key in locator and locator[key] is not None:
-            parts.append(f"{key}={locator[key]}")
+    parts += [
+        f"{key}={_locator_value(locator[key])}"
+        for key in sorted(locator)
+        if key != "type" and locator[key] is not None
+    ]
     return "/".join(parts)
+
+
+def _locator_value(value) -> str:
+    """locator 值的稳定字符串形式。容器按键名排序，避免插入顺序影响指纹。"""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return str(value)
 ```
 
 - [ ] **Step 5: 运行测试确认通过**
@@ -2165,7 +2198,7 @@ def check_tables(documents: list[dict]) -> list[dict]:
         issues.append(make_finding(
             severity="P2", category="表格体例", detector="deterministic",
             confidence="确定", file=fname,
-            locator={"type": "table", "row": 1},
+            locator={"type": "table", "index": idx, "row": 1},
             quote="",
             description=(
                 f"该表首行样式与全文主流写法不一致：主流为 "
