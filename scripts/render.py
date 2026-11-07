@@ -187,6 +187,167 @@ def _section_3(consistency, findings) -> str:
     return "".join(out)
 
 
+_STYLE_CATEGORIES = ("字体一致性", "段落格式一致性")
+_CONVENTION_CATEGORIES = (
+    "标题层级体例", "图表题注体例", "表格体例", "列表与编号",
+    "引用标记", "数字与单位", "主体名称",
+)
+
+
+def _section_4(consistency: dict) -> str:
+    out = ["<h2 id='s4'>§4 一致性差异</h2>"]
+    profile = consistency.get("style_profile", {})
+    issues = consistency.get("issues", [])
+
+    out.append("<h3>4.1 样式主流值</h3>")
+    if profile:
+        rows = []
+        for key, v in profile.items():
+            rows.append([
+                esc(v.get("label", key)),
+                esc(v.get("dominant")),
+                str(v.get("count", 0)),
+                str(v.get("total", 0)),
+            ])
+        out.append(_table(["项目", "主流值", "出现次数", "统计段落数"], rows))
+    else:
+        out.append("<p class='muted'>无可统计的样式数据（文档可能不含结构化样式）。</p>")
+
+    out.append("<h3>4.2 样式偏离明细</h3>")
+    style_issues = [i for i in issues if i.get("category") in _STYLE_CATEGORIES]
+    if style_issues:
+        out.append(_table(
+            ["文件", "位置", "项目", "实际情况", "主流值"],
+            [[esc(i.get("file", "")), esc(_locator_text(i.get("locator", {}))),
+              esc(i.get("category", "")), esc(i.get("quote", "")),
+              esc(i.get("description", ""))] for i in style_issues],
+        ))
+    else:
+        out.append("<p class='muted'>未发现样式偏离。</p>")
+
+    out.append("<h3>4.3 体例差异</h3>")
+    conv_issues = [i for i in issues if i.get("category") in _CONVENTION_CATEGORIES]
+    if conv_issues:
+        out.append(_table(
+            ["文件", "类别", "问题"],
+            [[esc(i.get("file", "")), esc(i.get("category", "")),
+              esc(i.get("description", ""))] for i in conv_issues],
+        ))
+    else:
+        out.append("<p class='muted'>未发现体例差异。</p>")
+
+    entities = consistency.get("entities", {})
+    names = entities.get("names", [])
+    out.append("<h3>4.4 主体名分布与写法变体</h3>")
+    if names:
+        out.append(_table(
+            ["主体名", "核心字号", "出现次数", "涉及文件"],
+            [[esc(n.get("name", "")), esc(n.get("core", "")), str(n.get("count", 0)),
+              esc("、".join(n.get("files", [])))] for n in names],
+        ))
+    else:
+        out.append("<p class='muted'>未识别到公司类名称。</p>")
+    variants = entities.get("variants", [])
+    multi = [v for v in variants if len(v.get("names", [])) > 1]
+    if multi:
+        out.append(_table(
+            ["核心字号", "写法变体"],
+            [[esc(v.get("core", "")), esc("、".join(v.get("names", [])))] for v in multi],
+        ))
+    else:
+        out.append("<p class='muted'>未发现同一主体的多种写法。</p>")
+    return "".join(out)
+
+
+def _section_5(findings: list[dict]) -> str:
+    todo = [f for f in findings if f.get("category") == "待补充内容"]
+    verify = [f for f in findings if f.get("confidence") == "疑似 · 需人工核实"]
+    out = ["<h2 id='s5'>§5 待补充与待核实</h2>"]
+    out.append("<h3>待补充内容</h3>")
+    if todo:
+        out.append(_table(
+            ["文件", "位置", "缺失内容", "建议"],
+            [[esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+              esc(f.get("quote", "")), esc(f.get("suggestion", ""))] for f in todo],
+        ))
+    else:
+        out.append("<p class='muted'>未发现待补充内容。</p>")
+    out.append("<h3>需人工核实项</h3>")
+    if verify:
+        out.append(_table(
+            ["文件", "位置", "问题", "建议"],
+            [[esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+              esc(f.get("description", "")), esc(f.get("suggestion", ""))] for f in verify],
+        ))
+    else:
+        out.append("<p class='muted'>无。</p>")
+    return "".join(out)
+
+
+def _section_6(baseline_diff: dict) -> str:
+    if not baseline_diff:
+        return ""
+    fd = baseline_diff.get("findings", {})
+    out = ["<h2 id='s6'>§6 复查对比</h2>"]
+    changed = [f for f in baseline_diff.get("files", []) if f.get("changed")]
+    if changed:
+        out.append(
+            "<div class='limit'>以下文件已修改，部分对比结果可能不适用："
+            + esc("、".join(f.get("file", "") for f in changed))
+            + "</div>"
+        )
+    for title, key in (("新增问题", "new"), ("已修复问题", "fixed"), ("未修复问题", "unchanged")):
+        items = fd.get(key, [])
+        out.append(f"<h3>{title}（{len(items)}）</h3>")
+        if items:
+            out.append(_table(
+                ["级别", "文件", "位置", "类别", "问题"],
+                [[f'<span class="badge {esc(f.get("severity", ""))}">{esc(f.get("severity", ""))}</span>',
+                  esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+                  esc(f.get("category", "")), esc(f.get("description", ""))]
+                 for f in items],
+            ))
+        else:
+            out.append("<p class='muted'>无</p>")
+    return "".join(out)
+
+
+_RULES = [
+    ("字体一致性", "字体、字号与全文主流值不一致的段落"),
+    ("段落格式一致性", "行距、缩进、对齐、段间距与主流值不一致的段落"),
+    ("标题层级体例", "同一文件内标题编号体系混用"),
+    ("图表题注体例", "同一文件内图表题注写法混用"),
+    ("表格体例", "表头写法不统一、缺重复表头"),
+    ("主体名称", "同一主体出现多种名称写法"),
+    ("主体串写", "同一文件内出现多个不同主体名称"),
+    ("数字与单位", "货币单位、日期格式混用"),
+    ("引用标记", "引用标记写法混用、编号越界"),
+    ("列表与编号", "有序列表编号方式混用"),
+    ("术语与缩写", "缩写首次出现未给出全称"),
+    ("错别字用词", "错别字、形近词误用"),
+    ("标点格式", "标点与空格使用不规范"),
+    ("前后矛盾", "同一事实在文档两处描述冲突"),
+    ("引用张冠李戴", "引用处语境与被引内容主题不符"),
+    ("待补充内容", "缺失数据、空白字段、应附材料"),
+    ("数字逻辑", "合计与分项不符、比例关系不成立"),
+    ("表述歧义", "表述不清或语义歧义"),
+    ("术语一致性", "同义异形术语混用"),
+]
+
+
+def _section_7(manifest: dict) -> str:
+    out = ["<h2 id='s7'>§7 附录</h2>"]
+    out.append("<h3>检查规则与判定标准</h3>")
+    out.append(_table(["类别", "判定标准"], [[esc(a), esc(b)] for a, b in _RULES]))
+    out.append("<h3>文件指纹</h3>")
+    out.append(_table(
+        ["文件", "SHA256"],
+        [[esc(d.get("file", "")), esc(d.get("sha256", ""))]
+         for d in manifest.get("documents", [])],
+    ))
+    return "".join(out)
+
+
 _LIMITATION = (
     "本工具仅做文档内互查，未核实外部事实。企业名称是否真实存在、"
     "引用文献是否真实存在、法规是否现行有效，均需人工核实；"
@@ -210,11 +371,25 @@ def build_html(data: dict) -> str:
         ("§1 结论概览", "s1"),
         ("§2 硬伤速览", "s2"),
         ("§3 按文件明细", "s3"),
+        ("§4 一致性差异", "s4"),
+        ("§5 待补充与待核实", "s5"),
     ]
     if baseline_diff:
         toc.append(("§6 复查对比", "s6"))
+    toc.append(("§7 附录", "s7"))
 
     nav = "".join(f"<a href='#{i}'>{t}</a>" for t, i in toc)
+
+    body = "".join([
+        _section_0(manifest),
+        _section_1(manifest, consistency, findings),
+        _section_2(consistency, findings),
+        _section_3(consistency, findings),
+        _section_4(consistency),
+        _section_5(findings),
+        _section_6(baseline_diff),
+        _section_7(manifest),
+    ])
 
     return (
         "<!DOCTYPE html>\n"
@@ -231,10 +406,7 @@ def build_html(data: dict) -> str:
         f"P0 {counts['P0']} ｜ P1 {counts['P1']} ｜ P2 {counts['P2']} ｜ P3 {counts['P3']}</div>"
         "</header>"
         f"<nav class='toc'>{nav}</nav>"
-        f"{_section_0(manifest)}"
-        f"{_section_1(manifest, consistency, findings)}"
-        f"{_section_2(consistency, findings)}"
-        f"{_section_3(consistency, findings)}"
+        f"{body}"
         f"<div class='limit'><b>能力边界</b><br>{esc(_LIMITATION)}</div>"
         "</div></body></html>"
     )
