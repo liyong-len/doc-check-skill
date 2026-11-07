@@ -3150,6 +3150,31 @@ def test_prepare_consistency_json_has_issues_list(tmp_path):
     cons = json.loads((work / "consistency.json").read_text(encoding="utf-8"))
     assert "issues" in cons
     assert "style_profile" in cons
+
+
+def test_prepare_promotes_ocr_document_to_failure():
+    from prepare import _ocr_failure
+    doc = {
+        "file": "scan.pdf", "path": "scan.pdf",
+        "notes": ["第 1 页无文本层，疑似扫描件，需 OCR"],
+        "blocks": [{"kind": "paragraph", "text": ""}],
+    }
+    failure, has_text = _ocr_failure(doc)
+    assert failure is not None
+    assert "需 OCR，当前不支持" in failure["reason"]
+    assert has_text is False
+
+
+def test_prepare_keeps_partially_scanned_document():
+    from prepare import _ocr_failure
+    doc = {
+        "file": "mixed.pdf", "path": "mixed.pdf",
+        "notes": ["第 2 页无文本层，疑似扫描件，需 OCR"],
+        "blocks": [{"kind": "paragraph", "text": "有文字"}],
+    }
+    failure, has_text = _ocr_failure(doc)
+    assert failure is not None
+    assert has_text is True
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -3181,6 +3206,29 @@ from extractors import extract_document
 from manifest import build_manifest
 
 
+def _ocr_failure(doc: dict) -> tuple[dict | None, bool]:
+    """扫描件判定。返回 (失败条目, 是否有文本层)。
+
+    无文本层的扫描件完全不可判定，不计入已检查文档；
+    部分无文本层的文档仍计入，但要在失败清单里点名受影响的页。
+    """
+    notes = [n for n in doc.get("notes", []) if "需 OCR" in n]
+    if not notes:
+        return None, True
+    has_text = any(
+        (b.get("text") or "").strip()
+        for b in doc.get("blocks", [])
+        if b.get("kind") == "paragraph"
+    )
+    reason = "需 OCR，当前不支持。"
+    reason += (
+        "该文档无文本层，未做任何内容判定。"
+        if not has_text
+        else " " + " ".join(notes)
+    )
+    return {"file": doc["file"], "path": doc["path"], "reason": reason}, has_text
+
+
 def prepare(files: list[Path], depth: str, work: Path) -> dict:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -3197,13 +3245,20 @@ def prepare(files: list[Path], depth: str, work: Path) -> dict:
             })
             continue
         try:
-            documents.append(extract_document(path))
+            doc = extract_document(path)
         except Exception as exc:  # 单文件失败不中断整体
             failures.append({
                 "file": path.name,
                 "path": str(path.resolve()),
                 "reason": f"抽取失败：{type(exc).__name__}: {exc}",
             })
+            continue
+        ocr, has_text = _ocr_failure(doc)
+        if ocr is not None:
+            failures.append(ocr)
+            if not has_text:
+                continue  # 完全无文本层，不算已检查
+        documents.append(doc)
 
     consistency = analyze(documents)
     chunks = build_chunks(documents, depth)
