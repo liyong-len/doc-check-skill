@@ -1,0 +1,29 @@
+{
+  "note": "人工标注的样本问题集合。匹配依据为 file + category + quote 归一化后的指纹。只收语义层的九类：阶段①的确定性结论由单元测试保证，不进金标（模型也不许写这些类别，写了就是重复报）。quote 必须与模型输出的 quote 归一化后完全一致。",
+  "items": [
+    {
+      "file": "sample_company.docx",
+      "category": "错别字用词",
+      "quote": "帐号信息见附件",
+      "severity": "P2"
+    },
+    {
+      "file": "sample_company.docx",
+      "category": "前后矛盾",
+      "quote": "本项目工期为 90 日历天。",
+      "severity": "P1"
+    },
+    {
+      "file": "sample_company.docx",
+      "category": "待补充内容",
+      "quote": "具体内容详见附件。",
+      "severity": "P2"
+    },
+    {
+      "file": "sample_company.docx",
+      "category": "标点格式",
+      "quote": "本项目服务期限为12个月,含一年质保。",
+      "severity": "P2"
+    }
+  ]
+}
