@@ -74,3 +74,20 @@ def test_extract_xlsx_theme_fill_is_json_serializable(tmp_path):
     cell = doc["sheets"][0]["cells"]["A1"]
     assert isinstance(cell["fill"], str)
     json.dumps(doc, ensure_ascii=False)
+
+
+def test_extract_xlsx_cells_keep_style(tmp_path):
+    # 单元格样式不能丢：丢了表格体例检查就永远看不见 xlsx 的表格
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "报价表"
+    ws["A1"] = "项目"
+    ws["A1"].font = openpyxl.styles.Font(bold=True, name="宋体", size=12)
+    path = tmp_path / "bold.xlsx"
+    wb.save(str(path))
+    doc = extract_xlsx(path)
+    table = next(b for b in doc["blocks"] if b["kind"] == "table")
+    cell = table["rows"][0][0]
+    assert cell["style"]["bold"] is True
+    assert cell["style"]["font_latin"] == "宋体"
+    assert cell["style"]["size_pt"] == 12

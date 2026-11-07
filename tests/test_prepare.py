@@ -132,3 +132,25 @@ def test_main_returns_nonzero_when_nothing_checked(tmp_path):
     code = main(["--files", str(tmp_path / "missing.docx"),
                  "--work", str(tmp_path / "work")])
     assert code == 1
+
+
+def test_same_basename_files_get_distinct_ids(tmp_path):
+    # 两个目录下的 report.docx：清单里要有两条不同记录，
+    # 分片 id 不能撞车，per_file 不能丢一份
+    a_dir = tmp_path / "a"
+    b_dir = tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    a = _make_docx(a_dir / "report.docx", "本文件由北京华信科技有限公司编制。")
+    b = _make_docx(b_dir / "report.docx", "本文件由上海远大信息技术有限公司编制。")
+    work = tmp_path / "work"
+    prepare([a, b], "standard", work)
+    manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
+    files = [d["file"] for d in manifest["documents"]]
+    assert len(files) == 2
+    assert len(set(files)) == 2
+    chunks = json.loads((work / "chunks.json").read_text(encoding="utf-8"))
+    ids = [c["chunk_id"] for c in chunks["chunks"]]
+    assert len(ids) == len(set(ids))
+    cons = json.loads((work / "consistency.json").read_text(encoding="utf-8"))
+    assert len(cons["entities"]["per_file"]) == 2

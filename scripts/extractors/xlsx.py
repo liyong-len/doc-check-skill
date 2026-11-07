@@ -81,6 +81,23 @@ def _infer_header_row(rows: list[list[dict]]) -> int:
     return 1
 
 
+def _cell_style(cell: dict) -> dict:
+    """单元格样式。
+
+    字体与对齐信息抽取器已经拿到了，写进块里丢掉的话，
+    表格体例检查就永远看不见 xlsx 的表格。
+    """
+    font = cell.get("font") or {}
+    align = cell.get("alignment") or {}
+    return {
+        "font_latin": font.get("name"),
+        "font_ea": font.get("name"),
+        "size_pt": font.get("size"),
+        "bold": bool(font.get("bold")),
+        "align": align.get("horizontal"),
+    }
+
+
 def extract_xlsx(path: Path) -> dict:
     path = Path(path)
     wb = openpyxl.load_workbook(str(path), data_only=False)
@@ -119,7 +136,10 @@ def extract_xlsx(path: Path) -> dict:
         table_rows = []
         for r in grid:
             table_rows.append([
-                {"text": "" if c["value"] is None else str(c["value"]), "style": {}}
+                {
+                    "text": "" if c["value"] is None else str(c["value"]),
+                    "style": _cell_style(c),
+                }
                 for c in r
             ])
         if table_rows:

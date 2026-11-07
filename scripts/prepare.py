@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,50 @@ def _ocr_failure(doc: dict) -> tuple[dict | None, bool]:
     return {"file": doc["file"], "path": doc["path"], "reason": reason}, has_text
 
 
+def _unique_file_ids(documents: list[dict]) -> None:
+    """给同名的文件分配互不相同的 id。
+
+    两个不同目录下的 report.docx 若都叫 report.docx，清单里会出现
+    两条同名记录，分片 id 也撞车（「report.docx:0」出现两次），
+    其中一份从报告里消失，每条问题还都会重复一遍。
+    """
+    by_name: dict[str, list[dict]] = {}
+    for doc in documents:
+        by_name.setdefault(Path(doc["path"]).name, []).append(doc)
+    for base, docs in by_name.items():
+        if len(docs) < 2:
+            continue
+        for doc, file_id in zip(docs, _disambiguate(docs)):
+            doc["file"] = file_id
+
+
+def _disambiguate(docs: list[dict]) -> list[str]:
+    """一组同名文件的互不相同 id：先相对路径，再加序号。"""
+    paths = [Path(d["path"]).resolve() for d in docs]
+    try:
+        common = Path(os.path.commonpath([str(p) for p in paths]))
+    except ValueError:      # 不在同一个盘上
+        common = paths[0].parent
+    ids = []
+    for p in paths:
+        try:
+            ids.append(p.relative_to(common).as_posix())
+        except ValueError:
+            ids.append(p.name)
+    counts: dict[str, int] = {}
+    for i in ids:
+        counts[i] = counts.get(i, 0) + 1
+    seen: dict[str, int] = {}
+    out = []
+    for i in ids:
+        if counts[i] > 1:
+            seen[i] = seen.get(i, 0) + 1
+            out.append(f"{i} ({seen[i]})")
+        else:
+            out.append(i)
+    return out
+
+
 def prepare(files: list[Path], depth: str, work: Path) -> dict:
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
@@ -69,6 +114,8 @@ def prepare(files: list[Path], depth: str, work: Path) -> dict:
             if not has_text:
                 continue  # 完全无文本层，不算已检查
         documents.append(doc)
+
+    _unique_file_ids(documents)
 
     consistency = analyze(documents)
     chunks = build_chunks(documents, depth)
