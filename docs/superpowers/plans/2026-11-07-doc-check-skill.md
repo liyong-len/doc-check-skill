@@ -1438,6 +1438,19 @@ _NAME_RE = re.compile(
 )
 
 
+def _is_form_fragment(prefix: str) -> bool:
+    """字号是否只是公司形式词的一段（如「股份」「有限」「责任」）。
+
+    正则的非贪婪匹配可能把形式词从中间切开，例如
+    「中信建设集团股份有限公司」会先切出「中信建设集团」，余下「股份有限公司」
+    又被当作一个名称切出「股份」+「有限公司」。这样的字号不是真实主体名。
+    """
+    for s in _SUFFIXES:
+        if 2 <= len(prefix) <= len(s) and s.startswith(prefix):
+            return True
+    return False
+
+
 def _trim_prefix(prefix: str) -> str:
     """切掉前缀中的连接词，取最长的合格切分作为字号主体。
 
@@ -1469,6 +1482,8 @@ def extract_company_names(text: str) -> list[str]:
     for m in _NAME_RE.finditer(text or ""):
         prefix = _trim_prefix(m.group("pre"))
         if len(prefix) < 2:
+            continue
+        if _is_form_fragment(prefix):
             continue
         name = prefix + m.group("suf")
         key = normalize_name(name)
