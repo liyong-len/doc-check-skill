@@ -59,6 +59,26 @@ bash install/install.sh
 bash install/install.sh --update
 ```
 
+### 装之前先看一眼
+
+三个选项让「装到哪儿去」这件事变得没有歧义：
+
+```bash
+# 只打印将写入的目录，一个文件都不写
+bash install/install.sh --dry-run
+
+# 改「~ 展开到哪个根目录」，不必改 HOME/USERPROFILE
+bash install/install.sh --target-root /tmp/scratch-home
+
+# 看机器上现在是什么状态：家目录根、各智能体目录、有没有残留
+bash install/install.sh --status
+```
+
+`--status` 的最后一行是机器可读的结论：`doc-check 安装状态：干净`，
+或者 `doc-check 安装状态：残留 N 处`（并列出残留目录的绝对路径）。
+检测是全局的（PATH 上的 `claude` 命令与家目录无关），安装不是——
+安装器因此在动手之前就把目标路径打印出来，装完再回显一次。
+
 安装器会依次做完这些事：
 
 1. 挑一个可用的 Python。候选顺序两个安装器完全一致：

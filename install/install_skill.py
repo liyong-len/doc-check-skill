@@ -7,6 +7,12 @@
 
 用法：
     python install/install_skill.py --repo-root <仓库根目录> --venv-py <解释器绝对路径> [--update]
+                                    [--dry-run] [--target-root <路径>] [--status]
+
+三个安全阀：
+    --dry-run      只解析目标目录并打印，不写任何文件
+    --target-root  改「~ 展开到哪个根目录」，不必动 HOME/USERPROFILE
+    --status       打印家目录根、各适配项的目标路径与残留情况
 """
 from __future__ import annotations
 
@@ -69,6 +75,22 @@ def home_dir() -> Path:
     return Path.home()
 
 
+def target_root(explicit: str | None = None) -> Path:
+    """`~` 展开到的根目录。
+
+    优先级：--target-root > 环境变量 DOC_CHECK_TARGET_ROOT > 用户主目录。
+
+    有了它就不必改 HOME/USERPROFILE 就能把技能装到别处。改环境变量装到
+    真实用户目录去的事故已经发生过两次：装完再去删，删没删干净也没人说得清。
+    """
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env = os.environ.get("DOC_CHECK_TARGET_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    return home_dir()
+
+
 def expand_home(path: str, home: Path) -> Path:
     """把 `~` 展开成主目录。非 `~` 开头的路径原样返回。"""
     if path == "~":
@@ -76,6 +98,68 @@ def expand_home(path: str, home: Path) -> Path:
     if path.startswith("~/"):
         return home / path[2:]
     return Path(path)
+
+
+# 已知的智能体技能根目录（相对于家目录根）。
+#
+# --status 要把「哪里有残留」说清楚，不能只报本次要写的那一个：
+# 装过又忘了删的残留目录往往在别的适配项下面。
+KNOWN_SKILL_ROOTS = [
+    ".claude/skills",
+    ".codex/skills",
+    "DoubaoWork/skills",
+    ".dsh/skills",
+]
+
+
+def skill_targets(adapters: dict, root: Path) -> list[tuple[dict, Path]]:
+    """每个适配项的目标目录（绝对路径）。跳过「手动接入」那一项。"""
+    rows = []
+    for agent in adapters["agents"]:
+        if agent.get("mode") == "manual":
+            continue
+        rows.append((agent, expand_home(agent["skill_dir"], root)))
+    return rows
+
+
+def leftover_dirs(root: Path) -> list[Path]:
+    """已知智能体根目录下残留的 doc-check 目录。"""
+    out = []
+    for rel in KNOWN_SKILL_ROOTS:
+        candidate = root / rel / "doc-check"
+        if candidate.exists():
+            out.append(candidate)
+    return out
+
+
+def print_status(adapters: dict, root: Path, repo_root: Path) -> int:
+    """打印安装状态：家目录根、各适配项的目标路径、残留情况。
+
+    输出的最后一行是机器可读的结论（干净 / 残留 N 处），
+    一条命令就能判断机器上到底有没有残留，不必靠人回忆。
+    """
+    print("== doc-check 安装状态 ==")
+    print(f"根目录（~ 展开到）：{root}")
+    print(f"仓库目录：{repo_root}")
+    print("")
+    print("已知智能体目录：")
+    for agent, target in skill_targets(adapters, root):
+        state = "已安装" if target.exists() else "未安装"
+        print(f"  [{state}] {agent['name']}  {target}")
+    print("")
+    leftovers = leftover_dirs(root)
+    print("残留的 doc-check 目录：")
+    if leftovers:
+        for path in leftovers:
+            print(f"  [残留] {path}")
+    else:
+        print("  （无）")
+    print("")
+    if leftovers:
+        print(f"doc-check 安装状态：残留 {len(leftovers)} 处")
+    else:
+        print("doc-check 安装状态：干净")
+    return 0
 
 
 def detect(agent: dict, home: Path) -> bool:
@@ -201,15 +285,53 @@ def main(argv=None) -> int:
     parser.add_argument("--repo-root", required=True, help="仓库根目录")
     parser.add_argument("--venv-py", required=True, help="虚拟环境解释器的绝对路径")
     parser.add_argument("--update", action="store_true", help="覆盖已安装的副本")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="只解析目标目录并打印，不写任何文件")
+    parser.add_argument("--target-root", default=None,
+                        help="改「~ 展开到哪个根目录」，不必改 HOME/USERPROFILE")
+    parser.add_argument("--status", action="store_true",
+                        help="打印家目录根、各适配项的目标路径与残留情况")
     args = parser.parse_args(argv)
 
     repo_root = Path(args.repo_root).resolve()
     venv_py = args.venv_py
-    home = home_dir()
+    root = target_root(args.target_root)
+    redirected = bool(args.target_root or os.environ.get("DOC_CHECK_TARGET_ROOT"))
 
     adapters = json.loads(
         (repo_root / "install" / "adapters.json").read_text(encoding="utf-8")
     )
+
+    print("== doc-check 智能体安装阶段 ==")
+    print(f"根目录（~ 展开到）：{root}")
+    if redirected:
+        print("  （由 --target-root / DOC_CHECK_TARGET_ROOT 指定，"
+              "不会写入真实家目录）")
+    print(f"仓库目录：{repo_root}")
+
+    if args.status:
+        print("")
+        return print_status(adapters, root, repo_root)
+
+    rows = skill_targets(adapters, root)
+    to_install = [(agent, target) for agent, target in rows if detect(agent, root)]
+
+    # 目标路径在**第一次写盘之前**就打印出来。
+    # 装完了再打印，看的人已经没法回头确认装到哪儿去了。
+    print("")
+    if args.dry_run:
+        print("== 试运行（--dry-run）：不会写入任何文件 ==")
+    print("本次将写入以下目录：")
+    for agent, target in rows:
+        if (agent, target) in to_install:
+            print(f"  [将写入] {agent['name']} -> {target}")
+        else:
+            print(f"  [将跳过] {agent['name']} -> {target}（未检测到该智能体）")
+    print("")
+
+    if args.dry_run:
+        print("试运行结束：没有写入任何文件。")
+        return 0
 
     installed: list[tuple[str, str, str]] = []
     skipped: list[str] = []
@@ -218,10 +340,10 @@ def main(argv=None) -> int:
         if agent.get("mode") == "manual":
             skipped.append(agent["name"])
             continue
-        if not detect(agent, home):
+        if not detect(agent, root):
             skipped.append(agent["name"])
             continue
-        target = expand_home(agent["skill_dir"], home)
+        target = expand_home(agent["skill_dir"], root)
         install_agent(repo_root, agent, target, venv_py)
         installed.append((agent["name"], str(target), agent.get("usage", "")))
 
@@ -233,6 +355,14 @@ def main(argv=None) -> int:
     if skipped:
         print("")
         print(f"未检测到（已跳过）：{'、'.join(skipped)}")
+    print("")
+    # 回执里再写一遍目标路径：检测是全局的（PATH 上的 claude 命令与家目录无关），
+    # 安装不是。读回执的人必须一眼看出东西装到了哪儿。
+    print("本次写入的目录：")
+    for _, path, _ in installed:
+        print(f"  {path}")
+    if not installed:
+        print("  （无）")
     print("")
     print(f"通用接入方式见 {(repo_root / 'install' / 'adapters' / 'generic.md').as_posix()}")
     print(f"仓库目录：{repo_root}")
