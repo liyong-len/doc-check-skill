@@ -1,31 +1,95 @@
 #!/usr/bin/env bash
 # doc-check 安装器
-# 用法：bash install/install.sh
+# 用法：bash install/install.sh [--update]
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+# 脚本自身所在目录与仓库根目录。只用内建命令算出来：
+# 解释器探测之前不能依赖 PATH 里的任何外部程序，否则在一台什么都没装的
+# 机器上会在探测之前就因为「找不到 dirname」而失败，压根走不到那句提示。
+_src="${BASH_SOURCE[0]}"
+case "$_src" in
+    */*) SCRIPT_DIR="$(cd "${_src%/*}" && pwd)" ;;
+    *)   SCRIPT_DIR="$(pwd)" ;;
+esac
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+INSTALL_DIR="$SCRIPT_DIR"
 VENV_DIR="$REPO_ROOT/.venv"
+
+UPDATE=0
+
+usage() {
+    printf '%s\n' \
+        '用法：doc-check 安装器 [选项]' \
+        '  --update      覆盖已安装的副本，并清理已从仓库删除的文件' \
+        '  -h, --help    显示本帮助并退出'
+}
+
+# 参数是显式的：--update 有明确含义，拼错的参数直接报错退出，
+# 不会被静默当成「正常安装」。
+for arg in "$@"; do
+    case "$arg" in
+        --update) UPDATE=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            echo "未知参数：$arg" >&2
+            echo "可用参数：--update、-h/--help" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 echo "== doc-check 安装器 =="
 echo "仓库目录：$REPO_ROOT"
+if [ "$UPDATE" -eq 1 ]; then
+    echo "模式：更新（覆盖已安装的副本，并清理已从仓库删除的文件）"
+else
+    echo "模式：安装（写入技能目录，已存在的同名文件会被覆盖）"
+fi
 
 # --- 1. 选择解释器 ---
+#
+# 候选顺序与 install.ps1 完全一致：先用启动器指定版本，再试带版本号的可执行名，
+# 最后才是通用的 python3 / python / py -3。优先 3.11 与 3.12，
+# 因为 lxml 与 pdfplumber 在这些版本上的预编译轮子最完整。
+#
+# 判定只看两样：退出码必须是 0，标准输出里必须有一行正好是「主.次」。
+# 标准错误上的任何内容都不参与判断——解释器在 stderr 上打一句提醒，
+# 不该让一个能用的 Python 被判成「没装 Python」。
+CANDIDATES=(
+    "py:-3.12"
+    "py:-3.11"
+    "py:-3.13"
+    "python3.12:"
+    "python3.11:"
+    "python3.13:"
+    "python3:"
+    "python:"
+    "py:-3"
+)
+
 PY_EXE=""
 PY_ARGS=""
 PY_VER=""
-for cand in "python3.12:" "python3.11:" "python3.13:" "python3:" "python:" "py:-3"; do
+for cand in "${CANDIDATES[@]}"; do
     exe="${cand%%:*}"
     args="${cand#*:}"
     if ! command -v "$exe" >/dev/null 2>&1; then continue; fi
-    ver="$("$exe" $args -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+    out="$("$exe" $args -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" && code=0 || code=$?
+    [ "$code" -eq 0 ] || continue
+    ver=""
+    while IFS= read -r line; do
+        line="${line//$'\r'/}"
+        if [[ "$line" =~ ^[0-9]+\.[0-9]+$ ]]; then ver="$line"; break; fi
+    done <<< "$out"
     [ -n "$ver" ] || continue
-    [[ "$ver" =~ ^[0-9]+\.[0-9]+$ ]] || continue
     major="${ver%%.*}"
     minor="${ver#*.}"
     if [ "$major" -lt 3 ]; then continue; fi
     if [ "$major" -eq 3 ] && [ "$minor" -lt 9 ]; then continue; fi
-    echo "使用解释器：$exe $args  (Python $ver)"
+    label="$exe"
+    if [ -n "$args" ]; then label="$exe $args"; fi
+    echo "使用解释器：$label  (Python $ver)"
     PY_EXE="$exe"
     PY_ARGS="$args"
     PY_VER="$ver"
@@ -42,9 +106,14 @@ if [ ! -d "$VENV_DIR" ]; then
     echo "创建虚拟环境 .venv ..."
     "$PY_EXE" $PY_ARGS -m venv "$VENV_DIR" || true
 fi
-VENV_PY="$VENV_DIR/bin/python"
-if [ ! -x "$VENV_PY" ]; then
-    echo "虚拟环境创建失败：$VENV_PY 不存在" >&2
+# 虚拟环境解释器。Windows 上（在 Git Bash 里跑本脚本时）布局是 Scripts/，
+# POSIX 上是 bin/，两个都认。
+VENV_PY=""
+for cand_py in "$VENV_DIR/bin/python" "$VENV_DIR/Scripts/python.exe"; do
+    if [ -x "$cand_py" ]; then VENV_PY="$cand_py"; break; fi
+done
+if [ -z "$VENV_PY" ]; then
+    echo "虚拟环境创建失败：$VENV_DIR/bin/python 不存在" >&2
     exit 1
 fi
 
@@ -64,76 +133,13 @@ fi
 echo "依赖自检通过。"
 
 # --- 5. 安装到各智能体 ---
-"$PY_EXE" $PY_ARGS - "$REPO_ROOT" "$VENV_PY" <<'PYEOF'
-"""doc-check 安装器的智能体安装阶段。"""
-from __future__ import annotations
-
-import json
-import os
-import shutil
-import sys
-from pathlib import Path
-
-repo_root = Path(sys.argv[1])
-venv_py = sys.argv[2]
-install_dir = repo_root / "install"
-adapters = json.loads((install_dir / "adapters.json").read_text(encoding="utf-8"))
-
-# 本脚本其余部分直接输出 UTF-8 字节，这里也统一成 UTF-8，
-# 否则在 Windows 的 Git Bash 里中文会按系统码页输出成乱码。
-sys.stdout.reconfigure(encoding="utf-8")
-
-installed, skipped = [], []
-for a in adapters["agents"]:
-    if a["mode"] == "manual":
-        skipped.append(a["name"])
-        continue
-    found = False
-    for p in a.get("detect_paths", []):
-        if Path(os.path.expanduser(p)).exists():
-            found = True
-            break
-    if not found:
-        for c in a.get("detect_commands", []):
-            if shutil.which(c):
-                found = True
-                break
-    if not found:
-        skipped.append(a["name"])
-        continue
-    target = Path(os.path.expanduser(a["skill_dir"]))
-    target.mkdir(parents=True, exist_ok=True)
-    # 入口文件取仓库原件：SKILL.md 里有完整的三阶段流程，
-    # 智能体真正读的是它，不能被下面的适配模板覆盖。
-    for item in (a["entry"], "references", "scripts", "requirements.txt"):
-        src = repo_root / item
-        if src.is_dir():
-            shutil.copytree(
-                src,
-                target / item,
-                dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-            )
-        elif src.exists():
-            shutil.copy2(src, target / item)
-    (target / "python-path.txt").write_text(venv_py, encoding="utf-8")
-    tpl = install_dir / "adapters" / f"{a['id']}.md"
-    if tpl.exists():
-        (target / "AGENT.md").write_text(
-            tpl.read_text(encoding="utf-8").replace("{{REPO_ROOT}}", repo_root.as_posix()),
-            encoding="utf-8",
-        )
-    installed.append((a["name"], str(target), a.get("usage", "")))
-
-print("")
-print("== 安装完成 ==")
-for name, path, usage in installed:
-    print(f"[已安装] {name} -> {path}")
-    print(f"          用法：{usage}")
-if skipped:
-    print("")
-    print(f"未检测到（已跳过）：{'、'.join(skipped)}")
-print("")
-print("通用接入方式见 install/adapters/generic.md")
-print(f"仓库目录：{repo_root}")
-PYEOF
+#
+# 装到智能体目录这一步由 install/install_skill.py 完成：
+# install.ps1 调用的是同一个文件，两个安装器的行为因此一致。
+if [ "$UPDATE" -eq 1 ]; then
+    "$VENV_PY" "$INSTALL_DIR/install_skill.py" --repo-root "$REPO_ROOT" --venv-py "$VENV_PY" --update ||
+        { echo "安装到智能体目录失败。" >&2; exit 1; }
+else
+    "$VENV_PY" "$INSTALL_DIR/install_skill.py" --repo-root "$REPO_ROOT" --venv-py "$VENV_PY" ||
+        { echo "安装到智能体目录失败。" >&2; exit 1; }
+fi

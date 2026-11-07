@@ -5,10 +5,15 @@
 ---
 本项目使用 doc-check 技能检查文档。仓库根目录：{{REPO_ROOT}}
 
-先阅读 {{REPO_ROOT}}/SKILL.md，按其中三阶段流程执行：
-1. python "{{REPO_ROOT}}/scripts/prepare.py" --files <文件...> --depth standard --work .doc-check-work
+先阅读 {{REPO_ROOT}}/SKILL.md，按其中三阶段流程执行。
+
+命令里的解释器要用装了 python-docx、openpyxl、pdfplumber、lxml 的那个 Python，
+也就是安装器建好的虚拟环境：Windows 是 {{REPO_ROOT}}/.venv/Scripts/python.exe，
+macOS / Linux 是 {{REPO_ROOT}}/.venv/bin/python。系统里没装依赖的 `python` 会直接 ImportError。
+
+1. "<解释器>" "{{REPO_ROOT}}/scripts/prepare.py" --files <文件...> --depth standard --work .doc-check-work
 2. 读 .doc-check-work/chunks.json 与 {{REPO_ROOT}}/references/content-rules.md，写 .doc-check-work/findings.json
-3. python "{{REPO_ROOT}}/scripts/render.py" --work .doc-check-work --out report.html
+3. "<解释器>" "{{REPO_ROOT}}/scripts/render.py" --work .doc-check-work --out report.html
 
 绝不修改用户的原始文档。
 ---
