@@ -299,3 +299,32 @@ def test_render_reports_missing_baseline(tmp_path, capsys):
     else:
         raise AssertionError("基线文件缺失时应当以退出码 2 结束")
     assert "基线文件" in capsys.readouterr().err
+
+
+def test_render_tolerates_null_baseline_fields(tmp_path):
+    """基线 JSON 里 findings/issues 为 null 时不得抛 TypeError。"""
+    work = _write_work(tmp_path, findings=_findings())
+    baseline = tmp_path / "prev.json"
+    baseline.write_text(
+        json.dumps({"generated_at": "", "findings": None, "issues": None,
+                    "manifest": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.html"
+    render(work, out, baseline=baseline)
+    assert out.exists()
+    html = out.read_text(encoding="utf-8")
+    assert "复查对比" in html
+    # 基线为空，两层的全部问题都算新增：模型侧 1 条 + 确定性层 1 条
+    assert "新增问题（2）" in html
+
+
+def test_render_tolerates_null_consistency_issues(tmp_path):
+    """consistency.json 的 issues 为 null 时不得抛 TypeError。"""
+    cons = _consistency()
+    cons["issues"] = None
+    work = _write_work(tmp_path, findings=_findings(), consistency=cons)
+    out = tmp_path / "report.html"
+    render(work, out)
+    assert out.exists()
+    assert "文档检查报告" in out.read_text(encoding="utf-8")

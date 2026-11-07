@@ -19,12 +19,6 @@ from schema import validate_findings
 
 SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
 
-# 两个主体相关类别，分属两层，不能互相替代：
-# 「主体串写」是确定性层的文件级 P0（该文件出现多个主体）；
-# 「主体名误用」是语义层的段落级问题（某一句里的名称与该文件主体不符）。
-# §1 的混主体计数与 §7 的规则表都要覆盖两者。
-_ENTITY_CATEGORIES = ("主体串写", "主体名误用")
-
 
 def esc(v) -> str:
     return html.escape("" if v is None else str(v), quote=True)
@@ -50,6 +44,16 @@ def _severity(f: dict) -> str:
     """取问题级别。非法或缺失的级别归入 P3，保证各处显示与总数一致。"""
     sev = f.get("severity")
     return sev if sev in SEVERITY_ORDER else "P3"
+
+
+def _issue_list(container: dict, key: str) -> list:
+    """取一组问题。字段缺失或为 null 时返回空列表，不得抛 TypeError。
+
+    consistency.json 与基线 JSON 都可能被人手改过，某个列表字段写成 null
+    不该让整个渲染崩掉。
+    """
+    value = container.get(key)
+    return value if isinstance(value, list) else []
 
 
 def _issue_card(f: dict) -> str:
@@ -151,7 +155,7 @@ def _section_0(manifest: dict) -> str:
 
 
 def _section_1(consistency, findings, counts) -> str:
-    all_issues = list(consistency.get("issues", [])) + list(findings)
+    all_issues = _issue_list(consistency, "issues") + list(findings)
     total = sum(counts.values()) or 1
     bars = []
     for s in SEVERITY_ORDER:
@@ -171,7 +175,11 @@ def _section_1(consistency, findings, counts) -> str:
 
     entity_names = consistency.get("entities", {}).get("names", [])
     todo = [f for f in all_issues if f.get("category") == "待补充内容"]
-    mixed = sum(1 for f in all_issues if f.get("category") in _ENTITY_CATEGORIES)
+    # 两个粒度不同的类别不能相加：确定性层报的是「这个文件有多个主体」，
+    # 语义层报的是「这一句里的名字不对」。同一个文件同时命中两层时，
+    # 相加会让读者以为有两个独立的混主体问题。
+    mixed_file = sum(1 for f in all_issues if f.get("category") == "主体串写")
+    mixed_para = sum(1 for f in all_issues if f.get("category") == "主体名误用")
 
     out = [f"<h2 id='s1'>§1 结论概览</h2>"]
     out.append('<div class="counts">')
@@ -187,14 +195,15 @@ def _section_1(consistency, findings, counts) -> str:
     out.append("<h3>重点提示</h3>")
     out.append(
         f"<p>识别到主体名称 {len(entity_names)} 个，"
-        f"疑似混主体问题 {mixed} 处，"
+        f"疑似混主体（文件级）{mixed_file} 处，"
+        f"主体名误用（段落级）{mixed_para} 处，"
         f"待补充内容 {len(todo)} 处。</p>"
     )
     return "".join(out)
 
 
 def _section_2(consistency, findings) -> str:
-    hard = [f for f in list(consistency.get("issues", [])) + list(findings)
+    hard = [f for f in _issue_list(consistency, "issues") + list(findings)
             if _severity(f) in ("P0", "P1")]
     hard.sort(key=lambda f: (_severity(f), f.get("file", "")))
     out = ["<h2 id='s2'>§2 硬伤速览（P0 / P1）</h2>"]
@@ -216,7 +225,7 @@ def _section_2(consistency, findings) -> str:
 
 def _section_3(consistency, findings, manifest) -> str:
     by_file: dict[str, list[dict]] = {}
-    for f in list(consistency.get("issues", [])) + list(findings):
+    for f in _issue_list(consistency, "issues") + list(findings):
         by_file.setdefault(f.get("file", ""), []).append(f)
     out = ["<h2 id='s3'>§3 按文件明细</h2>"]
     if not by_file:
@@ -238,7 +247,10 @@ def _section_3(consistency, findings, manifest) -> str:
 
 
 def _file_summary(manifest: dict, fname: str) -> str:
-    """文件摘要：规模、结构、主体名。"""
+    """文件摘要：规模、结构、主体名。
+
+    风格指纹是全文口径，出现在 §4.1，不在每个文件里重复。
+    """
     doc = next(
         (d for d in manifest.get("documents", []) if d.get("file") == fname),
         None,
@@ -248,9 +260,8 @@ def _file_summary(manifest: dict, fname: str) -> str:
     st = doc.get("stats", {})
     bits = [
         f"规模：{st.get('words', 0)} 字 / {st.get('paragraphs', 0)} 段 / {st.get('tables', 0)} 表",
+        f"结构：{st.get('tables', 0)} 表 / {st.get('rows', 0)} 行 / {st.get('sheets', 0)} 个工作表",
     ]
-    if st.get("sheets") or st.get("rows"):
-        bits.append(f"结构：{st.get('sheets', 0)} 个工作表 / {st.get('rows', 0)} 行")
     names = doc.get("entities", [])
     bits.append(f"主体名：{'、'.join(names) if names else '未识别'}")
     return f'<div class="muted">{"　｜　".join(bits)}</div>'
@@ -273,7 +284,7 @@ _CONVENTION_CATEGORIES = (
 def _section_4(consistency: dict) -> str:
     out = ["<h2 id='s4'>§4 一致性差异</h2>"]
     profile = consistency.get("style_profile", {})
-    issues = consistency.get("issues", [])
+    issues = _issue_list(consistency, "issues")
 
     out.append("<h3>4.1 样式主流值</h3>")
     if profile:
@@ -344,9 +355,13 @@ def _section_4(consistency: dict) -> str:
     return "".join(out)
 
 
-def _section_5(findings: list[dict], depth: str = "") -> str:
+def _section_5(findings: list[dict], depth: str = "",
+               deterministic_issues: list[dict] | None = None) -> str:
     todo = [f for f in findings if f.get("category") == "待补充内容"]
-    verify = [f for f in findings if f.get("confidence") == "疑似 · 需人工核实"]
+    # 需人工核实项必须覆盖两层：确定性层的 P0 主体串写也是「疑似」，
+    # 只筛模型侧会让 §5 印出「无。」而同一个 P0 在 §2/§3 里挂着。
+    verify = [f for f in list(findings) + list(deterministic_issues or [])
+              if f.get("confidence") == "疑似 · 需人工核实"]
     out = ["<h2 id='s5'>§5 待补充与待核实</h2>"]
     out.append("<h3>待补充内容</h3>")
     if todo:
@@ -363,9 +378,10 @@ def _section_5(findings: list[dict], depth: str = "") -> str:
     out.append("<h3>需人工核实项</h3>")
     if verify:
         out.append(_table(
-            ["文件", "位置", "问题", "建议"],
-            [[esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
-              esc(f.get("description", "")), esc(f.get("suggestion", ""))] for f in verify],
+            ["☐", "文件", "位置", "问题", "为何需要", "建议"],
+            [["☐", esc(f.get("file", "")), esc(_locator_text(f.get("locator", {}))),
+              esc(f.get("quote", "")), esc(f.get("description", "")),
+              esc(f.get("suggestion", ""))] for f in verify],
         ))
     else:
         out.append("<p class='muted'>无。</p>")
@@ -448,7 +464,7 @@ _RULES = [
     ("引用张冠李戴", "引用处语境与被引内容主题不符"),
     ("待补充内容", "缺失数据、空白字段、应附材料"),
     ("数字逻辑", "合计与分项不符、比例关系不成立"),
-    ("表述歧义", "表述不清或语义歧义"),
+    ("表述不清", "表述不清或语义歧义"),
     ("术语一致性", "同义异形术语混用"),
 ]
 
@@ -457,7 +473,7 @@ _DEPTH_COVERAGE = {
     "quick": "阶段①全量确定性检查（含主体串写、主体名称、字体与体例检查）已做；"
              "阶段②只做了错别字与标点扫描。"
              "未做语义互查：前后矛盾、主体名误用、引用张冠李戴、待补充内容、"
-             "数字逻辑、表述歧义、术语一致性等类别本次未覆盖。",
+             "数字逻辑、表述不清、术语一致性等类别本次未覆盖。",
     "standard": "阶段①全量确定性检查 + 阶段②九类语义检查全做。",
     "deep": "阶段①全量确定性检查 + 阶段②逐段细读，邻接窗口更大，跨片对照加强。",
 }
@@ -492,7 +508,7 @@ def build_html(data: dict) -> str:
     findings = data.get("findings", [])
     baseline_diff = data.get("baseline_diff")
 
-    counts = _count_severity(list(consistency.get("issues", [])) + list(findings))
+    counts = _count_severity(_issue_list(consistency, "issues") + list(findings))
     manifest = _manifest_with_entities(manifest, consistency)
 
     toc = [
@@ -515,7 +531,7 @@ def build_html(data: dict) -> str:
         _section_2(consistency, findings),
         _section_3(consistency, findings, manifest),
         _section_4(consistency),
-        _section_5(findings, manifest.get("depth", "")),
+        _section_5(findings, manifest.get("depth", ""), _issue_list(consistency, "issues")),
         _section_6(baseline_diff),
         _section_7(manifest),
     ])
@@ -590,11 +606,11 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
         # 复查对比必须覆盖**两层**：模型写的 findings 与确定性层的 issues。
         # 只比模型侧，新出现的 P0 混主体会在 §2/§3 显示却不被计入 §6，
         # 等于在专门用来追踪变化的章节里说了假话。
-        current_all = list(findings) + list(consistency.get("issues", []))
-        prev_all = list(prev.get("findings", [])) + list(prev.get("issues", []))
+        current_all = list(findings) + _issue_list(consistency, "issues")
+        prev_all = _issue_list(prev, "findings") + _issue_list(prev, "issues")
         baseline_diff = {
             "findings": diff_findings(current_all, prev_all),
-            "files": diff_manifests(manifest, prev.get("manifest", {})),
+            "files": diff_manifests(manifest, prev.get("manifest") or {}),
         }
 
     html_text = build_html({
@@ -611,7 +627,7 @@ def render(work: Path, out: Path, baseline: Path | None = None) -> Path:
     write_json(work / "last-findings.json", {
         "generated_at": manifest.get("generated_at", ""),
         "findings": findings,
-        "issues": consistency.get("issues", []),
+        "issues": _issue_list(consistency, "issues"),
         "manifest": manifest,
     })
     return out

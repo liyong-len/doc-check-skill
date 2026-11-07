@@ -288,7 +288,25 @@ def test_section1_counts_both_entity_categories():
         "findings": [_finding("主体名误用", severity="P1")],
         "baseline_diff": None,
     })
-    assert "疑似混主体问题 2 处" in html
+    assert "疑似混主体（文件级）1 处" in html
+    assert "主体名误用（段落级）1 处" in html
+
+
+def test_section1_does_not_sum_entity_granularities():
+    """两个粒度不同的类别不得相加成一个「N 处」。"""
+    cons = _consistency()
+    cons["issues"] = [{
+        "id": "k" * 16, "severity": "P0", "category": "主体串写",
+        "detector": "deterministic", "confidence": "疑似 · 需人工核实",
+        "file": "a.docx", "locator": {"type": "file"},
+        "quote": "甲公司", "description": "出现两个主体", "suggestion": "确认归属",
+    }]
+    html = build_html({
+        "manifest": _manifest(), "consistency": cons,
+        "findings": [_finding("主体名误用", severity="P1")],
+        "baseline_diff": None,
+    })
+    assert "疑似混主体问题 2 处" not in html
 
 
 def test_section7_rules_list_both_entity_categories():
@@ -299,3 +317,65 @@ def test_section7_rules_list_both_entity_categories():
     })
     assert "主体串写" in html
     assert "主体名误用" in html
+
+
+def test_section7_rules_use_semantic_category_names():
+    """规则表的类别名要与阶段②实际产出的 category 一致。"""
+    html = build_html({
+        "manifest": _manifest(), "consistency": _consistency(),
+        "findings": [], "baseline_diff": None,
+    })
+    assert "表述不清" in html
+    assert "表述歧义" not in html
+
+
+def test_section5_verify_table_includes_deterministic_layer():
+    """需人工核实项必须覆盖确定性层，否则 P0 疑似在 §5 里会消失。"""
+    cons = _consistency()
+    cons["issues"] = [{
+        "id": "m" * 16, "severity": "P0", "category": "主体串写",
+        "detector": "deterministic", "confidence": "疑似 · 需人工核实",
+        "file": "a.docx", "locator": {"type": "file"},
+        "quote": "甲公司", "description": "该文件出现两个主体",
+        "suggestion": "确认归属",
+    }]
+    html = build_html({
+        "manifest": _manifest(), "consistency": cons,
+        "findings": [], "baseline_diff": None,
+    })
+    section = html.split("需人工核实项")[1]
+    assert "主体串写" not in html.split("需人工核实项")[0].split("按文件明细")[0]
+    assert "该文件出现两个主体" in section
+    assert "☐" in section
+    assert "为何需要" in section
+
+
+def test_section5_verify_empty_state_not_shown_when_deterministic_pending():
+    """确定性层有 P0 疑似时，§5 不得印「无。」。"""
+    cons = _consistency()
+    cons["issues"] = [{
+        "id": "n" * 16, "severity": "P0", "category": "主体串写",
+        "detector": "deterministic", "confidence": "疑似 · 需人工核实",
+        "file": "a.docx", "locator": {"type": "file"},
+        "quote": "甲公司", "description": "该文件出现两个主体",
+        "suggestion": "确认归属",
+    }]
+    html = build_html({
+        "manifest": _manifest(), "consistency": cons,
+        "findings": [], "baseline_diff": None,
+    })
+    section = html.split("需人工核实项")[1]
+    assert "无。" not in section.split("<h3>")[0]
+
+
+def test_section3_file_summary_always_has_structure():
+    """结构行不得有条件：docx 也要显示表数/行数/工作表数。"""
+    html = build_html({
+        "manifest": _manifest(), "consistency": _consistency(),
+        "findings": [_finding("前后矛盾")], "baseline_diff": None,
+    })
+    section = html.split("id='s3'")[1].split("id='s4'")[0]
+    assert "结构：" in section
+    assert "2 表" in section
+    assert "0 行" in section
+    assert "0 个工作表" in section
