@@ -32,9 +32,10 @@ python scripts/prepare.py --files <文件1> <文件2> --depth <档位> --work .d
 ### 阶段② 语义判定
 
 1. 读 `references/content-rules.md`，这是语义检查的规则与定级标准。
-2. 读 `references/severity.md`，确认 severity 与 confidence 的判定口径。
-3. 读 `.doc-check-work/chunks.json`，逐片检查。
-4. 把结果写入 `.doc-check-work/findings.json`（一个 JSON 数组，空数组表示没问题），结构见 `references/severity.md`。
+2. 读 `references/severity.md`，确认 severity 与 confidence 的判定口径，以及阶段① 的 `consistency.json` 有哪些键。
+3. 读 `references/report-spec.md`，知道报告里哪几张表是按字面量筛的——类别名或置信度写错字面量，条目会从这些表里消失。
+4. 读 `.doc-check-work/chunks.json`，逐片检查；判断「这条问题在阶段①有没有依据」时对照 `.doc-check-work/consistency.json`。
+5. 把结果写入 `.doc-check-work/findings.json`（一个 JSON 数组，空数组表示没问题），结构见 `references/severity.md`。
 
 检查纪律：
 
@@ -46,7 +47,7 @@ python scripts/prepare.py --files <文件1> <文件2> --depth <档位> --work .d
   「标题层级体例」「图表题注体例」「表格体例」「列表与编号」「引用标记」「数字与单位」
   「主体名称」「主体串写」「术语与缩写」**——这些是确定性层的类别，脚本已经报过，写一遍就是重复报同一个问题。
   尤其注意：「主体串写」是确定性层的文件级 P0，语义层对应的段落级类别叫「主体名误用」。
-- 阶段①的 `consistency.json` 里已有确定性问题，**不要在 findings.json 里重复写一遍**。findings.json 只放语义层的问题。语义层发现的问题若在阶段①有对应依据（如主体名命中、算术校验一致），confidence 写「确定」，否则写「疑似 · 需人工核实」。
+- 阶段①的 `consistency.json` 里已有确定性问题，**不要在 findings.json 里重复写一遍**。findings.json 只放语义层的问题。语义层发现的问题若在阶段①有对应依据（如主体名在阶段①的主体清单里出现过、阶段①已指出同一处格式偏离），confidence 写「确定」，否则写「疑似 · 需人工核实」。阶段①不做算术校验，合计与分项是否相符只能由语义层自己判断。
 - 只有你能在文档里指出证据链（互相冲突的两处原文、算出来的合计与分项、能对上的主体名）时才写「确定」；
   凡是靠推测得出的、或者需要文档外事实才能成立的结论，一律写「疑似 · 需人工核实」。
 
@@ -90,7 +91,7 @@ python scripts/render.py --work .doc-check-work --out report.html --baseline .do
 
 **扫描版 PDF 怎么办？** 阶段①会报「需 OCR，当前不支持」。如实告知用户该文件未被检查，不要编造检查结果。
 
-**没有 Python 环境怎么办？** 告知用户需要 Python 3.9 及以上，并指向 README 的安装章节。
+**没有 Python 环境怎么办？** 告知用户需要 Python 3.9 及以上。若本仓库已带 `install/` 目录，指向 `install/install.ps1`（Windows）或 `install/install.sh`（macOS/Linux）；若尚未安装，说明需要先获取仓库再运行安装脚本。
 
 **上下文放不下怎么办？** 按 chunk 顺序处理，findings 分批落盘到 findings.json，不要一次性载入全部原文。
 

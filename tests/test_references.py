@@ -1,8 +1,28 @@
 from pathlib import Path
+import json
+import re
 
 import schema
 
 REF = Path(__file__).resolve().parent.parent / "references"
+
+# 语义层（阶段②）固定类别
+SEMANTIC_CATEGORIES = [
+    "错别字用词", "标点格式", "前后矛盾", "主体名误用", "引用张冠李戴",
+    "待补充内容", "数字逻辑", "表述不清", "术语一致性",
+]
+
+# 确定性层（阶段①）类别，语义层不得使用
+DETERMINISTIC_CATEGORIES = [
+    "字体一致性", "段落格式一致性", "标题层级体例", "图表题注体例", "表格体例",
+    "列表与编号", "引用标记", "数字与单位", "主体名称", "主体串写", "术语与缩写",
+]
+
+# 缩写停用表，scripts/analyze.py 的 _ABBR_STOPLIST
+ABBR_STOPLIST = [
+    "PDF", "ISO", "XML", "HTML", "URL", "API", "KPI", "ROI", "TBD", "CPU",
+    "RAM", "SSD", "LED", "CAD", "CAM", "PLC", "TCP", "UDP", "HTTP", "HTTPS",
+]
 
 
 def _read(name):
@@ -43,7 +63,6 @@ def test_content_rules_cover_all_nine_categories():
 def test_severity_doc_introduces_no_extra_confidence_literals():
     # 参考文档不得自造 schema 里没有的置信度字面量：
     # 渲染器是按字面量分类展示的，文档与代码不一致会静默漏项
-    import re
     text = _read("severity.md")
     for literal in set(re.findall(r"「(确定[^」]*)」", text)):
         assert literal in schema.CONFIDENCES, literal
@@ -66,3 +85,89 @@ def test_format_rules_cover_all_ten_categories():
                 "表格体例", "主体名称", "数字与单位", "引用标记",
                 "列表与编号", "术语与缩写"]:
         assert cat in text, cat
+
+
+# --- 复查轮次 1：参考文档必须描述实际跑的检查，且不得把智能体引到确定性层类别上 ---
+
+
+def test_severity_example_uses_semantic_category_and_llm_detector():
+    # 示例是最容易被照抄的东西：示例里若是确定性层的类别，
+    # 智能体照抄就会把脚本已经报过的问题再报一遍
+    text = _read("severity.md")
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.S)
+    assert m, "severity.md 里找不到 findings.json 示例"
+    example = json.loads(m.group(1))
+    assert example["category"] in SEMANTIC_CATEGORIES, example["category"]
+    assert example["detector"] == "llm", example["detector"]
+
+
+def test_severity_doc_does_not_point_at_format_rules():
+    # format-rules.md 里的十一个类别全是确定性层的，
+    # 字段说明不得把智能体指向那里
+    text = _read("severity.md")
+    assert "format-rules.md" not in text
+
+
+def test_severity_doc_marks_deterministic_categories_as_script_only():
+    text = _read("severity.md")
+    for cat in DETERMINISTIC_CATEGORIES:
+        assert cat in text, cat
+    assert "不要在 findings.json 里写" in text
+
+
+def test_reference_docs_describe_consistency_json_keys():
+    # SKILL.md 要求智能体拿阶段①的结论当「确定」的依据，
+    # 就必须知道 consistency.json 里有哪些键
+    text = _read("severity.md")
+    for key in ["style_profile", "issues", "per_file", "stats"]:
+        assert key in text, key
+
+
+def test_format_rules_states_region_retaining_rule():
+    # 归组基准是 canonical_core：保留行政区划前缀。
+    # 按 core_key 写会把北京与上海的两家同名公司并成一家
+    text = _read("format-rules.md")
+    assert "保留行政区划" in text
+    assert "北京华信" in text and "上海华信" in text
+
+
+def test_format_rules_states_suffix_condition():
+    # 互为后缀还要多出来的那部分不含弱连接词，
+    # 否则「联合网络通信」会被并进「网络通信」
+    text = _read("format-rules.md")
+    assert "不含弱连接词" in text
+
+
+def test_format_rules_has_known_limitations_section():
+    text = _read("format-rules.md")
+    parts = text.split("## 已知局限")
+    assert len(parts) == 2, "缺少「已知局限」小节"
+    body = parts[1]
+    assert "嵌套" in body          # 嵌套括号
+    assert "括号" in body           # 形式词被括号拆开
+    assert "30" in body             # 字号长度上限
+    assert "停用表" in body         # 缩写停用表
+
+
+def test_format_rules_lists_abbreviation_stoplist():
+    text = _read("format-rules.md")
+    for abbr in ABBR_STOPLIST:
+        assert abbr in text, abbr
+
+
+def test_format_rules_does_not_push_abbreviations_to_semantic_layer():
+    text = _read("format-rules.md")
+    assert "脚本只提供候选缩写" not in text
+    assert "语义层只需核对" not in text
+
+
+def test_format_rules_says_citation_gaps_need_human_check():
+    text = _read("format-rules.md")
+    assert "越界" in text
+    assert "人工核对" in text
+
+
+def test_format_rules_limits_caption_gap_check_to_hyphenated_numbers():
+    text = _read("format-rules.md")
+    assert "不参与缺号检查" in text
+    assert "图N.N" in text
