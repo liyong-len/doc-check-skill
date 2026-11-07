@@ -3886,14 +3886,21 @@ def _locator_text(loc: dict) -> str:
 
 def _issue_card(f: dict) -> str:
     sev = f.get("severity", "P3")
+    loc = f.get("locator", {}) or {}
+    extra = ""
+    if loc.get("abbreviation"):
+        # 缩写类 finding 的判别信息在 locator 里，quote 为空
+        extra = f" · 缩写 {esc(loc['abbreviation'])}"
+    quote = f.get("quote", "")
+    quote_html = f'<div class="quote">{esc(quote)}</div>' if quote else ""
     return (
         f'<div class="issue {esc(sev)}">'
         f'<div><span class="badge {esc(sev)}">{esc(sev)}</span>'
         f'<span class="tag">{esc(f.get("category", ""))}</span>'
         f'<span class="tag">{esc(f.get("detector", ""))}</span>'
         f'<span class="tag">{esc(f.get("confidence", ""))}</span></div>'
-        f'<div class="loc">{esc(f.get("file", ""))} · {_locator_text(f.get("locator", {}))}</div>'
-        f'<div class="quote">{esc(f.get("quote", ""))}</div>'
+        f'<div class="loc">{esc(f.get("file", ""))} · {_locator_text(loc)}{extra}</div>'
+        f'{quote_html}'
         f'<div>{esc(f.get("description", ""))}</div>'
         f'<div class="fix">建议：{esc(f.get("suggestion", ""))}</div>'
         f"</div>"
