@@ -4860,7 +4860,8 @@ Expected: FAIL，references 目录不存在
 
 ## 写作要求
 
-- category 取值固定为：错别字用词、标点格式、前后矛盾、主体串写、引用张冠李戴、待补充内容、数字逻辑、表述不清、术语一致性。
+- category 取值固定为：错别字用词、标点格式、前后矛盾、主体名误用、引用张冠李戴、待补充内容、数字逻辑、表述不清、术语一致性。
+  注意「主体名误用」与确定性层的「主体串写」是两个类别：后者是文件级 P0，由脚本产出；前者是段落级，由你产出。不要用「主体串写」这个 category。
 - severity 与 confidence 的判定标准见 severity.md。
 - locator.type 取 paragraph，index 取该分片 block_indexes 的首个下标。
 - description 写清为什么不妥，suggestion 给出可直接执行的改法。
