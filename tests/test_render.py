@@ -119,3 +119,20 @@ def test_build_html_groups_issues_by_file():
     })
     assert "a.docx" in html
     assert "工期为 90 日历天" in html
+
+
+def test_build_html_escapes_locator_text():
+    """locator 的 section_path 来自文档标题，必须转义后输出。"""
+    html = build_html({
+        "manifest": _manifest(), "consistency": _consistency(),
+        "findings": [{
+            "id": "e" * 16, "severity": "P2", "category": "错别字",
+            "detector": "llm", "confidence": "确定", "file": "a.docx",
+            "locator": {"type": "paragraph", "index": 3,
+                        "section_path": "<script>alert(1)</script>"},
+            "quote": "正文", "description": "描述", "suggestion": "建议",
+        }],
+        "baseline_diff": None,
+    })
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html

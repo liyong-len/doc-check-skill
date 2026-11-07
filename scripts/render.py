@@ -54,7 +54,7 @@ def _issue_card(f: dict) -> str:
         f'<span class="tag">{esc(f.get("category", ""))}</span>'
         f'<span class="tag">{esc(f.get("detector", ""))}</span>'
         f'<span class="tag">{esc(f.get("confidence", ""))}</span></div>'
-        f'<div class="loc">{esc(f.get("file", ""))} · {_locator_text(loc)}{extra}</div>'
+        f'<div class="loc">{esc(f.get("file", ""))} · {esc(_locator_text(loc))}{extra}</div>'
         f'{quote_html}'
         f'<div>{esc(f.get("description", ""))}</div>'
         f'<div class="fix">建议：{esc(f.get("suggestion", ""))}</div>'
@@ -292,7 +292,7 @@ def _section_6(baseline_diff: dict) -> str:
     changed = [f for f in baseline_diff.get("files", []) if f.get("changed")]
     if changed:
         out.append(
-            "<div class='limit'>以下文件已修改，部分对比结果可能不适用："
+            "<div class='limit'>以下文件已修改（相对上次检查），部分对比结果可能不适用："
             + esc("、".join(f.get("file", "") for f in changed))
             + "</div>"
         )
