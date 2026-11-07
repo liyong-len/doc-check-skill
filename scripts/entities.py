@@ -18,12 +18,48 @@ _SUFFIXES = [
 ]
 
 # 行政区划前缀（按长度降序）
+#
+# 省级行政区之外，地级市与计划单列市也要在列：简称规则靠它判断
+# 「像不像简称」（「北京华信」像简称，「深圳华信」以前不像），
+# 通用片段规则也靠它判断名字是不是「只有行业词」——
+# 两处规则对城市一视同仁，不能只认直辖市。
 _REGIONS = [
     "内蒙古自治区", "内蒙古", "黑龙江", "新疆维吾尔自治区", "新疆", "西藏",
     "宁夏回族自治区", "宁夏", "青海", "甘肃", "陕西", "山西", "河北", "河南",
     "湖南", "湖北", "安徽", "浙江", "江苏", "山东", "江西", "福建", "广东",
     "海南", "四川", "贵州", "云南", "辽宁", "吉林", "北京", "上海", "天津",
     "重庆", "台湾", "香港", "澳门",
+    # 计划单列市
+    "深圳", "大连", "青岛", "宁波", "厦门",
+    # 地级市
+    "石家庄", "唐山", "秦皇岛", "邯郸", "保定", "张家口", "承德", "廊坊",
+    "沧州", "邢台", "衡水", "太原", "大同", "长治", "晋城", "临汾", "运城",
+    "鞍山", "抚顺", "丹东", "锦州", "营口", "阜新", "盘锦", "铁岭",
+    "四平", "通化", "延边", "齐齐哈尔", "大庆", "牡丹江", "佳木斯",
+    "南京", "无锡", "徐州", "常州", "苏州", "南通", "连云港", "淮安",
+    "盐城", "扬州", "镇江", "泰州", "宿迁", "杭州", "温州", "嘉兴",
+    "湖州", "绍兴", "金华", "衢州", "舟山", "台州", "丽水", "合肥",
+    "芜湖", "蚌埠", "福州", "泉州", "漳州", "南平", "三明", "龙岩",
+    "南昌", "九江", "赣州", "宜春", "上饶", "吉安", "抚州", "萍乡",
+    "济南", "烟台", "潍坊", "淄博", "临沂", "济宁", "泰安", "威海",
+    "德州", "聊城", "滨州", "菏泽", "枣庄", "日照", "郑州", "洛阳",
+    "开封", "南阳", "新乡", "许昌", "焦作", "平顶山", "安阳", "商丘",
+    "信阳", "周口", "驻马店", "武汉", "宜昌", "襄阳", "荆州", "黄石",
+    "十堰", "鄂州", "孝感", "荆门", "咸宁", "黄冈", "长沙", "株洲",
+    "湘潭", "衡阳", "邵阳", "岳阳", "常德", "益阳", "郴州", "永州",
+    "成都", "绵阳", "德阳", "自贡", "攀枝花", "泸州", "乐山", "眉山",
+    "南充", "宜宾", "广元", "达州", "贵阳", "遵义", "安顺", "毕节",
+    "昆明", "大理", "曲靖", "玉溪", "保山", "南宁", "柳州", "桂林",
+    "梧州", "北海", "钦州", "防城港", "玉林", "百色", "贺州", "崇左",
+    "海口", "三亚", "儋州", "乌鲁木齐", "克拉玛依", "喀什", "阿克苏",
+    "吐鲁番", "哈密", "兰州", "天水", "白银", "酒泉", "庆阳", "西安",
+    "咸阳", "宝鸡", "渭南", "汉中", "延安", "银川",
+    "石嘴山", "吴忠", "固原", "西宁", "海东", "格尔木", "呼和浩特",
+    "包头", "赤峰", "通辽", "鄂尔多斯", "呼伦贝尔", "巴彦淖尔",
+    "乌兰察布", "拉萨", "日喀则", "林芝", "昌都",
+    "中山", "东莞", "佛山", "珠海", "惠州", "汕头", "湛江", "江门",
+    "茂名", "肇庆", "清远", "韶关", "河源", "阳江", "云浮", "潮州",
+    "揭阳", "汕尾", "台北", "高雄",
 ]
 
 # 连接词分两类。
@@ -190,22 +226,38 @@ def _segment_end(text: str, start: int) -> int:
     return i
 
 
-def _has_name_boundary(text: str) -> bool:
-    """片段里是否出现了「另一个主体的起点」。
+def _gap_boundary(gap: str) -> int | None:
+    """名字中间那段文字里有没有「另一个主体的起点」，有的话给出它的位置。
 
-    强连接词后面必然是新主体；弱连接词后面紧跟行政区划时也是新主体
-    （「北京华信科技有限公司和上海远大信息技术有限公司」是两个主体）。
+    这段文字是「第一个公司形式词」与「同一串里更靠后的形式词」之间的内容。
+    判定必须由连接词驱动，不能只靠行政区划：
+
+    - 强连接词（由、甲方、受托…）出现在这段文字里，后面必然是新主体；
+    - 弱连接词出现在这段文字的**开头**时，它就是两个主体之间的连接词
+      （「北京华信科技有限公司**和**华为技术有限公司」）。字面开头的
+      弱连接词是字号的一部分（「和而泰」「中国联合」「清华同方」），
+      但那种写法里连接词在名字的开头，不在这段中间文字里——
+      区分「连接词」与「字号的一部分」靠的是它在名字里的位置，不是字本身；
+    - 弱连接词后面紧跟行政区划时也是新主体（这是行政区划信号，
+      作为附加信号保留，不作为唯一判据）。
     """
+    best = None
     for conn in _STRONG_CONNECTORS:
-        if conn in text:
-            return True
+        idx = gap.find(conn)
+        if idx >= 0 and (best is None or idx < best):
+            best = idx
+    if best is not None:
+        return best
     for conn in _SPLIT_CONNECTORS:
-        idx = text.find(conn)
+        if gap.startswith(conn):
+            return 0
+    for conn in _SPLIT_CONNECTORS:
+        idx = gap.find(conn)
         while idx >= 0:
-            if _starts_with_region(text[idx + len(conn):]):
-                return True
-            idx = text.find(conn, idx + 1)
-    return False
+            if _starts_with_region(gap[idx + len(conn):]):
+                return idx
+            idx = gap.find(conn, idx + 1)
+    return None
 
 
 def _find_suffix_outside_brackets(seg: str) -> tuple[int, int] | None:
@@ -228,7 +280,7 @@ def _find_suffix_outside_brackets(seg: str) -> tuple[int, int] | None:
     return None
 
 
-def _extend_over_suffix(text: str, end: int) -> int:
+def _extend_over_suffix(text: str, end: int) -> tuple[int, int | None]:
     """把名字延伸过紧跟其后的公司形式词，以及同一串里更靠后的形式词。
 
     「中国建筑设计院有限公司」的非贪婪匹配会停在「设计院」，
@@ -238,6 +290,10 @@ def _extend_over_suffix(text: str, end: int) -> int:
     这类名字里，字号本身还含有形式词或行业词，最外层的形式词才是名字的
     终点。因此名字要一直延伸到本串里最后一个形式词为止——
     中间那段文字若出现了新主体的起点（连接词），就到此为止。
+
+    返回 (名字终点, 下一个主体的起点)。第二个返回值非 None 表示中间
+    遇到了另一个主体的起点：名字停在第一个形式词处，下一个名字从
+    连接词之后开始（连接词本身不是名字的一部分）。
     """
     changed = True
     while changed:
@@ -252,10 +308,27 @@ def _extend_over_suffix(text: str, end: int) -> int:
         seg_end = _segment_end(text, end)
         seg = text[end:seg_end]
         found = _find_suffix_outside_brackets(seg)
-        if found and not _has_name_boundary(seg[:found[0]]):
-            end += found[1]
-            changed = True
-    return end
+        if not found:
+            break
+        gap = seg[:found[0]]
+        boundary = _gap_boundary(gap)
+        if boundary is not None:
+            conn = _boundary_connector(gap, boundary)
+            return end, end + boundary + len(conn)
+        end += found[1]
+        changed = True
+    return end, None
+
+
+def _boundary_connector(gap: str, idx: int) -> str:
+    """边界处那个连接词本身。"""
+    for conn in _STRONG_CONNECTORS:
+        if gap.startswith(conn, idx):
+            return conn
+    for conn in _SPLIT_CONNECTORS:
+        if gap.startswith(conn, idx):
+            return conn
+    return ""
 
 
 def _is_in_bracket(text: str, start: int, end: int) -> bool:
@@ -271,9 +344,16 @@ def _is_in_bracket(text: str, start: int, end: int) -> bool:
 def _generic_fragment(name: str) -> bool:
     """这个名字是不是通用片段，而不是公司名。
 
-    两种情形：
-    - 字号本身就是形式词：「研究院有限公司」「设计院有限公司」
-    - 字号剥掉行政区划后只剩行业词：「工程咨询有限公司」「北京工程有限公司」
+    只有一种情形：**字号整个就是形式词**，没有任何自己的字
+    （「研究院有限公司」「设计院有限公司」）。
+
+    「字号剥掉行政区划后只剩行业词」不作为拒绝理由：
+    「北京工程咨询有限公司」「北京科技发展有限公司」「北京贸易有限公司」
+    都是注册过的普通公司名，把它们丢掉，文档看起来就只有一个主体，
+    混主体的检查也就跟着失效了。
+
+    没有行政区划前缀、且字号里全是行业词时（「工程咨询有限公司」）
+    仍然拒绝：那不是任何一家公司的字号。
     """
     core = name
     for s in _ENTERPRISE_SUFFIXES:
@@ -285,8 +365,8 @@ def _generic_fragment(name: str) -> bool:
     rest = core
     for r in _REGIONS:
         if rest.startswith(r):
-            rest = rest[len(r):]
-            break
+            # 有行政区划前缀：字号里必然还有自己的字，按普通公司名处理
+            return False
     if not rest:
         return False
     while rest:
@@ -306,6 +386,10 @@ def extract_company_names(text: str) -> list[str]:
     名字延伸过去的那截文字若被重新匹配一次，就会凭空多出半个公司名
     （「北京华信集团研究院有限公司」曾被切成「北京华信集团研究院」
     与「研究院有限公司」两个名字）。
+
+    延伸遇到下一个主体的起点（连接词）时，名字停在第一个形式词处，
+    下一个名字从连接词之后开始——「北京华信科技有限公司和华为技术有限公司」
+    是两个公司，不能并成一个。
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -316,9 +400,11 @@ def extract_company_names(text: str) -> list[str]:
         m = _NAME_RE.search(text, pos)
         if not m:
             break
-        end = _extend_over_suffix(text, m.end())
+        end, resume = _extend_over_suffix(text, m.end())
         # 跳到延伸后的末尾，延伸过去的那截不再重新匹配
         pos = max(end, m.end())
+        if resume is not None:
+            pos = max(pos, resume)
         prefix = _trim_prefix(m.group("pre"))
         if len(prefix) < 2:
             continue
@@ -460,6 +546,30 @@ def _is_plausible_short_form(core: str) -> bool:
     return _starts_with_region(core)
 
 
+def _has_form_word(name: str) -> bool:
+    """名字里有没有公司形式词。
+
+    没有形式词的名字是**裸字号**（「北京华信」），它是简称而不是公司全称。
+    """
+    n = normalize_name(name)
+    return any(n.endswith(s) for s in _SUFFIXES)
+
+
+def is_full_company_name(name: str) -> bool:
+    """这个名字是不是带企业形式词的全称（「…有限公司」）。
+
+    用来挑「建议统一成哪一种写法」：裸字号不是正式全称，
+    让用户统一成裸字号是错的建议。
+    """
+    n = normalize_name(name)
+    return any(n.endswith(s) for s in _ENTERPRISE_SUFFIXES)
+
+
+def _is_bare_字号(name: str) -> bool:
+    """这个写法是裸字号（没有公司形式词）。"""
+    return not _has_form_word(name)
+
+
 def same_entity(a: str, b: str) -> bool:
     """两个名称是否指向同一主体。
 
@@ -467,11 +577,15 @@ def same_entity(a: str, b: str) -> bool:
     - 互为**后缀**且多出来的部分不含弱连接词：带连接词前缀的同一写法与干净写法
       （「由北京华信科技」）。多出来的若是「联合」「和」这类字号常用字
       （「联合网络通信」之于「网络通信」），则不是同一主体
-    - 互为**前缀**且较短一方像简称：不超过 3 个字，或以行政区划开头，
+    - 互为**前缀**且较短一方是**裸字号**：不超过 3 个字，或以行政区划开头，
       且不以行业词结尾（否则是经营范围不同，不是简称）
 
-    前缀关系不加限制会误并「中国建筑」与「中国建筑科技」，
-    所以要求较短一方是简称形态。
+    前缀关系只对裸字号成立。两个**全称**的核心字号一短一长，
+    是两家公司（「北京华信集团有限公司」与「北京华信科技有限公司」：
+    集团是母公司的形式词，剥掉之后与简称同形，但它们不是一家）。
+
+    裸字号在文档里指向哪一家要看上下文，这个判定在 group_variants 里做；
+    这里只回答「有没有可能是同一家」。
     """
     ca, cb = canonical_core(a), canonical_core(b)
     if not ca or not cb:
@@ -483,7 +597,23 @@ def same_entity(a: str, b: str) -> bool:
         return False
     if longer.endswith(shorter) and _extra_head_is_clean(longer, shorter):
         return True
-    if longer.startswith(shorter) and _is_plausible_short_form(shorter):
+    if longer.startswith(shorter):
+        short_name = a if canonical_core(a) == shorter else b
+        if _is_bare_字号(short_name) and _is_plausible_short_form(shorter):
+            return True
+    return False
+
+
+def _is_short_form_of(bare: str, other: str) -> bool:
+    """裸字号 bare 可能是 other 的简称吗。"""
+    cb, co = canonical_core(bare), canonical_core(other)
+    if not cb or not co:
+        return False
+    if cb == co:
+        return True
+    if co.startswith(cb):
+        return True
+    if co.endswith(cb) and _extra_head_is_clean(co, cb):
         return True
     return False
 
@@ -521,10 +651,17 @@ def group_variants(names: list[str]) -> list[dict]:
                  用来判断「同一主体是否出现了多种写法」——
                  「与上海远大信息技术有限公司」和「上海远大信息技术有限公司」
                  规范写法相同，不算两种写法
-    - core       成员中最长的核心字号
+    - core       规范核心字号（canonical_core），与 entities.names 里的 core
+                 同一个口径
 
     先按规范核心字号精确分组，再按显式的、顺序无关的规则跨组合并：
     两组之间每一对名字都互为同一主体时才合并。
+
+    **裸字号**（没有公司形式词的写法，如「北京华信」）单独处理：
+    它只有一种含义时才是简称，候选不唯一时它谁也不代表——
+    「北京华信」在「北京华信集团有限公司」与「北京华信科技有限公司」
+    同时出现时指的是哪一家，文档本身没有依据。把它并进任何一家都是
+    编造依据，因此它单独成组。
     """
     unique = list(dict.fromkeys(names))
     order = {n: i for i, n in enumerate(unique)}
@@ -532,8 +669,11 @@ def group_variants(names: list[str]) -> list[dict]:
     def sort_key(n: str) -> tuple:
         return (canonical_core(n), canonical_name(n), n)
 
+    full = [n for n in unique if _has_form_word(n)]
+    bare = [n for n in unique if not _has_form_word(n)]
+
     buckets: dict[str, list[str]] = {}
-    for n in sorted(unique, key=sort_key):
+    for n in sorted(full, key=sort_key):
         buckets.setdefault(canonical_core(n), []).append(n)
 
     groups: list[dict] = []
@@ -567,7 +707,28 @@ def group_variants(names: list[str]) -> list[dict]:
         }
         del groups[j]
 
+    # 裸字号：只有唯一候选时才并入
+    for b in sorted(bare, key=lambda n: order[n]):
+        cands = []
+        if _is_plausible_short_form(canonical_core(b)):
+            cands = [
+                g for g in groups
+                if any(_is_short_form_of(b, m) for m in g["names"])
+            ]
+        if len(cands) == 1:
+            target = cands[0]
+            merged = sorted(target["names"] + [b], key=lambda n: order[n])
+            target["names"] = merged
+            target["canonicals"] = _canonicals(merged)
+        else:
+            # 没有候选或有多个候选：它谁也不代表，单独成组（不能凭空消失）
+            groups.append({
+                "core": canonical_core(b),
+                "names": [b],
+                "canonicals": _canonicals([b]),
+            })
+
     for g in groups:
-        g["core"] = max((core_key(n) for n in g["names"]), key=len)
+        g["core"] = max((canonical_core(n) for n in g["names"]), key=len)
     groups.sort(key=lambda g: g["core"])
     return groups

@@ -67,9 +67,10 @@ def test_bare_form_word_is_not_a_company_name():
 
 
 def test_generic_industry_fragment_is_not_a_company_name():
-    # 字号剥掉行政区划后只剩行业词，是通用片段
+    # 字号里全是行业词、又没有自己的字，是通用片段
     assert extract_company_names("工程咨询有限公司") == []
-    assert extract_company_names("北京工程有限公司") == []
+    # 字号是行业词，但前面有行政区划：那是注册过的普通公司名，要抽出来
+    assert extract_company_names("北京工程有限公司") == ["北京工程有限公司"]
     # 字号里还有实义词就不是片段
     assert extract_company_names("华信工程咨询有限公司") == ["华信工程咨询有限公司"]
 
