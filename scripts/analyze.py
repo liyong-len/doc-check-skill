@@ -10,7 +10,13 @@ import re
 from collections import Counter
 
 from common import fmt_value as _fmt
-from entities import canonical_core, extract_company_names, group_variants
+from entities import (
+    canonical_core,
+    canonical_name,
+    extract_company_names,
+    group_variants,
+    is_full_company_name,
+)
 from schema import make_finding
 
 # 参与一致性比对的样式字段
@@ -134,19 +140,22 @@ _NOT_A_NUMBER_TAIL = r"(?!\s*[个条项处次段章节份件标页类])"
 # 「图3-1 流程图」与「表3-1 清单」是正确写法，不是混用。
 # 数字前有没有空格也算写法差异（「图1-1」与「图 1-1」）。
 # 写法清单里的空格是实打实的空格，不是排版占位。
+#
+# 不带章节号的题注（「图3」「图 3」）算**一种**写法：正文里的交叉引用
+# 「设备如图 3 所示。」与题注「图3 流程图」会同时出现在一份文件里，
+# 把它们分成两种写法就报出一条确定级的假问题。带章节号的写法仍然分
+# 「图 N-N」与「图N-N」两种——规范里的例子就是这一对。
 _CAPTION_PATTERNS = [
     ("图 N-N", re.compile(r"图\s+\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "图"),
     ("图N-N", re.compile(r"图\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "图"),
     ("图 N.N", re.compile(r"图\s+\d+\.\d+"), "图"),
     ("图N.N", re.compile(r"图\d+\.\d+"), "图"),
-    ("图 N", re.compile(r"图\s+\d+" + _NOT_A_NUMBER_TAIL), "图"),
-    ("图N", re.compile(r"图\d+" + _NOT_A_NUMBER_TAIL), "图"),
+    ("图N", re.compile(r"图\s*\d+" + _NOT_A_NUMBER_TAIL), "图"),
     ("表 N-N", re.compile(r"表\s+\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "表"),
     ("表N-N", re.compile(r"表\d+[-－]\d+" + _NOT_A_NUMBER_TAIL), "表"),
     ("表 N.N", re.compile(r"表\s+\d+\.\d+"), "表"),
     ("表N.N", re.compile(r"表\d+\.\d+"), "表"),
-    ("表 N", re.compile(r"表\s+\d+" + _NOT_A_NUMBER_TAIL), "表"),
-    ("表N", re.compile(r"表\d+" + _NOT_A_NUMBER_TAIL), "表"),
+    ("表N", re.compile(r"表\s*\d+" + _NOT_A_NUMBER_TAIL), "表"),
 ]
 
 # 引用标记写法。序号限三位数，避免把年份「（2024）」当引用。
@@ -154,7 +163,23 @@ _CAPTION_PATTERNS = [
 # 「（n）」在中文文档里最常见的是枚举序号（「（1）」「（2）」），
 # 不是引用标记。因此这种写法要求前面有引用引导词
 # （参考文献/文献/见/据…），否则不参与写法混用的判定。
-_CITATION_CONTEXT = r"(?:参考文献|文献|见|据|参见|引自|依据|如表)"
+#
+# 单字引导词「见」「据」本身也是普通词的一部分：
+# 「意见（2）」「详见（3）」「数据（1）」「根据（2）」里的括号是枚举序号，
+# 不是引用标记。中文没有词边界可依，这里用「常见的以它结尾的词」来挡：
+# 这些词里出现的见/据不算引用引导词。
+# 完整词（参考文献、文献、参见、引自、依据、如表）不受这条限制。
+_CITATION_LEADIN_BLOCKERS = {
+    "见": "意解常少不只偏遇听看详阅省可想未已闻",
+    "据": "数根依证票收凭单即说此称报失",
+}
+
+_CITATION_CONTEXT = (
+    r"(?:参考文献|文献|参见|引自|依据|如表"
+    r"|(?<![" + _CITATION_LEADIN_BLOCKERS["见"] + r"])[见]"
+    r"|(?<![" + _CITATION_LEADIN_BLOCKERS["据"] + r"])[据]"
+    r")"
+)
 _CITATION_PATTERNS = [
     ("文献[n]", re.compile(r"文献\[\d+\]"), "引用"),
     ("[n]", re.compile(r"\[\d+(?:[-–—,，]\d+)*\]"), "引用"),
@@ -578,6 +603,11 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
         for _, b in _text_blocks([doc], include_tables=True):
             found.extend(extract_company_names(b.get("text", "")))
         per_file[doc["file"]] = found
+
+    # 主体清单按文件名排序后建立：同样一批文档换个顺序跑，
+    # 结论必须一模一样，否则复查对比会凭空多出「新增问题」。
+    for file_id in sorted(per_file):
+        found = per_file[file_id]
         for name in found:
             if name not in seen_names:
                 seen_names.add(name)
@@ -586,8 +616,8 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
             if key not in names:
                 names[key] = {"name": name, "core": key, "count": 0, "files": []}
             names[key]["count"] += 1
-            if doc["file"] not in names[key]["files"]:
-                names[key]["files"].append(doc["file"])
+            if file_id not in names[key]["files"]:
+                names[key]["files"].append(file_id)
 
     # 变体聚类必须基于全部原始写法，不能基于按主体标识归并后的名单：
     # 「北京华信科技有限公司」与「北京华信科技有限责任公司」的主体标识相同，
@@ -608,7 +638,7 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
                 + "、".join(writings)
                 + "。全套文档应统一使用同一名称。"
             ),
-            suggestion=f"统一为正式全称「{writings[0]}」。",
+            suggestion=f"统一为正式全称「{_preferred_writing(writings)}」。",
         ))
 
     for doc in documents:
@@ -650,19 +680,37 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
                 "name": v["name"], "core": v["core"], "count": v["count"],
                 "files": v["files"],
             }
-            for v in names.values()
+            for _, v in sorted(names.items())
         ],
         "variants": variants,
-        "per_file": per_file,
+        "per_file": {k: per_file[k] for k in sorted(per_file)},
     }
     return issues, summary
 
 
+def _preferred_writing(writings: list[str]) -> str:
+    """建议统一成哪一种写法：优先带企业形式词的全称。
+
+    裸字号（「北京华信」）不是正式全称，让用户「统一为北京华信」是错的建议。
+    """
+    for w in writings:
+        if is_full_company_name(w):
+            return w
+    return writings[0] if writings else ""
+
+
 def _first_file_for(names: dict, group_names: list[str]) -> str:
-    for v in names.values():
+    """这一组主体出现在哪个文件里。
+
+    取文件名最小的那一个：归属必须与输入顺序无关，
+    否则同一批文档换个顺序跑，这条问题的 id 就变了。
+    """
+    files: list[str] = []
+    for key in sorted(names):
+        v = names[key]
         if v["name"] in group_names:
-            return v["files"][0] if v["files"] else ""
-    return ""
+            files.extend(v["files"])
+    return sorted(set(files))[0] if files else ""
 
 
 def _named_in_header(doc: dict, group: dict) -> bool:
@@ -671,20 +719,52 @@ def _named_in_header(doc: dict, group: dict) -> bool:
     规范 §5.4：疑似混主体的前提是「未由文件名或章节标题显式区分」。
     「区分」是对具体主体而言的：文件名提到甲，不等于文件里的乙
     也被区分了。因此这一判定必须按组做，不能整份文件一刀切。
+
+    只按这一组的**实际写法**匹配，不能拿去掉行政区划的核心字号去匹配：
+    文件名「北京华信科技有限公司投标文件.docx」里含有「华信科技」，
+    用核心字号去匹配，文件里的「上海华信科技有限公司」也会被当成
+    「文件名已经点明了」，混主体就被漏掉了。行政区划必须参与比对——
+    北京的华信科技与上海的华信科技不是一家。
     """
     header = doc.get("file", "") + " " + " ".join(
         str(s.get("heading", "")) for s in doc.get("sections", [])
     )
-    candidates = list(group.get("names", []))
-    if group.get("core"):
-        candidates.append(group["core"])
+    candidates: list[str] = []
+    for name in group.get("names", []):
+        if not name:
+            continue
+        candidates.append(name)
+        canon = canonical_name(name)
+        if canon != name:
+            candidates.append(canon)
     for name in candidates:
-        if name and name in header:
+        if name in header:
             return True
     return False
 
 
+# 问题排序：先按严重程度，再按文件、类别、指纹。
+#
+# 结论必须与输入顺序无关。同一批文档换个 --files 顺序跑，
+# consistency.json 必须逐字节相同，否则复查对比会凭空多出
+# 「新增问题」与「已修复问题」——文件没变，结论却变了。
+_SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+
+def _issue_sort_key(issue: dict) -> tuple:
+    return (
+        _SEVERITY_ORDER.get(str(issue.get("severity", "")), 9),
+        str(issue.get("file", "")),
+        str(issue.get("category", "")),
+        str(issue.get("id", "")),
+        str(issue.get("description", "")),
+    )
+
+
 def analyze(documents: list[dict]) -> dict:
+    # 文档顺序不影响结论：同样一批文档换个顺序跑，报告必须一模一样。
+    documents = sorted(documents, key=lambda d: str(d.get("file", "")))
+
     issues = []
     issues += _collect_deviations(documents, _FONT_KEYS, "字体一致性", "P2")
     issues += _collect_deviations(documents, _PARA_KEYS, "段落格式一致性", "P2")
@@ -692,6 +772,8 @@ def analyze(documents: list[dict]) -> dict:
 
     entity_issues, entity_summary = check_entities(documents)
     issues += entity_issues
+
+    issues.sort(key=_issue_sort_key)
 
     profile = {}
     for key in _FONT_KEYS + _PARA_KEYS:
