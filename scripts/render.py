@@ -96,26 +96,30 @@ def _count_severity(issues: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _entities_by_file(manifest: dict, consistency: dict) -> dict[str, list[str]]:
-    """每个文件推断出的主体名。
+def _manifest_with_entities(manifest: dict, consistency: dict) -> dict:
+    """补全 manifest 里每个文档的主体名，返回 manifest 的副本。
 
-    manifest.documents[].entities 是首选来源；阶段①未回写时退回
-    consistency.entities.per_file（那里可能有重复项，按出现顺序去重）。
+    阶段①目前不把主体名回写进 manifest.documents[].entities，该字段恒为空；
+    真正的主体名在 consistency.entities.per_file 里（有重复项，按出现顺序去重）。
+    不补的话 §0 的「推断出的主体名」列与 §3 的主体名摘要永远显示「未识别」。
     """
-    out: dict[str, list[str]] = {}
     per_file = (consistency.get("entities") or {}).get("per_file") or {}
+    documents = []
     for d in manifest.get("documents", []):
-        name = d.get("file", "")
-        raw = d.get("entities") or per_file.get(name) or []
-        seen: list[str] = []
-        for n in raw:
-            if n not in seen:
-                seen.append(n)
-        out[name] = seen
+        doc = dict(d)
+        if not doc.get("entities"):
+            names: list[str] = []
+            for n in per_file.get(doc.get("file", ""), []):
+                if n not in names:
+                    names.append(n)
+            doc["entities"] = names
+        documents.append(doc)
+    out = dict(manifest)
+    out["documents"] = documents
     return out
 
 
-def _section_0(manifest: dict, entities: dict[str, list[str]]) -> str:
+def _section_0(manifest: dict) -> str:
     rows = []
     for d in manifest.get("documents", []):
         st = d.get("stats", {})
@@ -126,7 +130,7 @@ def _section_0(manifest: dict, entities: dict[str, list[str]]) -> str:
             esc(st.get("words", 0)),
             esc(st.get("paragraphs", 0)),
             esc(st.get("tables", 0)),
-            esc("、".join(entities.get(d.get("file", ""), [])) or "未识别"),
+            esc("、".join(d.get("entities", [])) or "未识别"),
             esc(d.get("sha256", "")[:12]),
         ])
     out = [f"<h2 id='s0'>§0 检查范围与未能检查项</h2>"]
@@ -210,7 +214,7 @@ def _section_2(consistency, findings) -> str:
     return "".join(out)
 
 
-def _section_3(consistency, findings, manifest, entities) -> str:
+def _section_3(consistency, findings, manifest) -> str:
     by_file: dict[str, list[dict]] = {}
     for f in list(consistency.get("issues", [])) + list(findings):
         by_file.setdefault(f.get("file", ""), []).append(f)
@@ -221,7 +225,7 @@ def _section_3(consistency, findings, manifest, entities) -> str:
     for fname in sorted(by_file):
         items = by_file[fname]
         out.append(f"<details open><summary>{esc(fname)}（{len(items)} 个问题）</summary>")
-        out.append(_file_summary(manifest, fname, entities))
+        out.append(_file_summary(manifest, fname))
         groups: dict[str, list[dict]] = {}
         for f in items:
             groups.setdefault(f.get("category", "未分类"), []).append(f)
@@ -233,7 +237,7 @@ def _section_3(consistency, findings, manifest, entities) -> str:
     return "".join(out)
 
 
-def _file_summary(manifest: dict, fname: str, entities) -> str:
+def _file_summary(manifest: dict, fname: str) -> str:
     """文件摘要：规模、结构、主体名。"""
     doc = next(
         (d for d in manifest.get("documents", []) if d.get("file") == fname),
@@ -247,7 +251,7 @@ def _file_summary(manifest: dict, fname: str, entities) -> str:
     ]
     if st.get("sheets") or st.get("rows"):
         bits.append(f"结构：{st.get('sheets', 0)} 个工作表 / {st.get('rows', 0)} 行")
-    names = entities.get(fname, [])
+    names = doc.get("entities", [])
     bits.append(f"主体名：{'、'.join(names) if names else '未识别'}")
     return f'<div class="muted">{"　｜　".join(bits)}</div>'
 
@@ -489,7 +493,7 @@ def build_html(data: dict) -> str:
     baseline_diff = data.get("baseline_diff")
 
     counts = _count_severity(list(consistency.get("issues", [])) + list(findings))
-    entities = _entities_by_file(manifest, consistency)
+    manifest = _manifest_with_entities(manifest, consistency)
 
     toc = [
         ("§0 检查范围", "s0"),
@@ -506,10 +510,10 @@ def build_html(data: dict) -> str:
     nav = "".join(f"<a href='#{i}'>{t}</a>" for t, i in toc)
 
     body = "".join([
-        _section_0(manifest, entities),
+        _section_0(manifest),
         _section_1(consistency, findings, counts),
         _section_2(consistency, findings),
-        _section_3(consistency, findings, manifest, entities),
+        _section_3(consistency, findings, manifest),
         _section_4(consistency),
         _section_5(findings, manifest.get("depth", "")),
         _section_6(baseline_diff),
