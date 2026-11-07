@@ -1352,11 +1352,33 @@ def test_connector_inside_company_name_is_not_trimmed():
     assert extract_company_names("北京和信科技有限公司") == ["北京和信科技有限公司"]
 
 
-def test_trim_picks_longest_qualifying_cut():
-    # 「由」切出 6 字、「和」只切出 3 字，取更长的那个
+def test_trim_skips_cut_that_leaves_too_little():
+    # 「由」切出 6 字、「和」只切出 3 字（不足 4 字），跳过「和」取「由」
     assert extract_company_names("本项目由北京和兴科技有限公司编制") == [
         "北京和兴科技有限公司"
     ]
+
+
+def test_trim_picks_last_qualifying_connector():
+    # 候选长度随连接词右移而变短，取最短合格切分 = 取最靠后的合格连接词，
+    # 这样句子碎片（甲方、乙方、委托）不会带进名字
+    assert extract_company_names("由甲方及乙方共同委托北京华信科技有限公司") == [
+        "北京华信科技有限公司"
+    ]
+
+
+def test_center_is_not_a_company_form():
+    # 「中心」是普通名词不是企业形式，技术中心不该被抽成企业名
+    assert extract_company_names("本项目技术中心负责实施") == []
+    assert extract_company_names("数据中心有限公司") == ["数据中心有限公司"]
+
+
+def test_form_fragment_guard_keeps_equal_length_names():
+    # 形式词的严格前缀才是片段，长度相等的是真实字号
+    assert extract_company_names("研究中心有限公司") == ["研究中心有限公司"]
+    assert extract_company_names("设计院有限公司") == ["设计院有限公司"]
+    # 「股份」是「股份有限公司」的严格前缀，是片段
+    assert extract_company_names("中信建设集团股份有限公司") == ["中信建设集团"]
 
 
 def test_core_key_strips_suffix_and_region():
@@ -1407,9 +1429,12 @@ import re
 from common import normalize_name
 
 # 词尾（长词优先，保证先匹配到「有限责任公司」而非「有限公司」）
+# 注意：「中心」「工程中心」不在此列。「中心」是普通名词而非企业形式，
+# 若当作形式词，投标文档里 ubiquitous 的「技术中心」「研发中心」会被抽成企业名，
+# 凭空造出第二个主体字号，触发假的 P0「疑似混主体」。
 _SUFFIXES = [
     "股份有限公司", "有限责任公司", "集团有限公司", "有限公司",
-    "集团", "研究院", "研究所", "设计院", "事务所", "工程中心", "中心",
+    "集团", "研究院", "研究所", "设计院", "事务所",
 ]
 
 # 行政区划前缀（按长度降序）
@@ -1439,24 +1464,31 @@ _NAME_RE = re.compile(
 
 
 def _is_form_fragment(prefix: str) -> bool:
-    """字号是否只是公司形式词的一段（如「股份」「有限」「责任」）。
+    """字号是否只是公司形式词的一部分（如「股份」「有限」「责任」）。
 
     正则的非贪婪匹配可能把形式词从中间切开，例如
     「中信建设集团股份有限公司」会先切出「中信建设集团」，余下「股份有限公司」
     又被当作一个名称切出「股份」+「有限公司」。这样的字号不是真实主体名。
+
+    只拒绝形式词的**严格前缀**。长度相等时不算片段，
+    否则「设计院有限公司」「研究中心有限公司」这类真实名称会被误杀。
     """
     for s in _SUFFIXES:
-        if 2 <= len(prefix) <= len(s) and s.startswith(prefix):
+        if 2 <= len(prefix) < len(s) and s.startswith(prefix):
             return True
     return False
 
 
 def _trim_prefix(prefix: str) -> str:
-    """切掉前缀中的连接词，取最长的合格切分作为字号主体。
+    """切掉前缀中的连接词，取最短的合格切分作为字号主体。
 
     枚举每个连接词的出现位置，切掉它及其之前的部分，在长度不小于
-    _MIN_PREFIX_LEN 的候选中取最长的那个。长度都不合格时完全不裁剪——
+    _MIN_PREFIX_LEN 的候选中取最短的一个——也就是最靠后的那个连接词，
+    同时跳过切完太短的候选。长度都不合格时完全不裁剪：
     连接词本身可能是字号的一部分（「华为技术」中的「为」）。
+
+    取最短而非最长，是因为候选长度随连接词位置右移而变短，
+    取最长等于取最早的连接词，会把「由甲方及乙方共同委托」这样的句子碎片带进名字。
     """
     best = None
     for conn in _CONNECTORS:
@@ -1467,7 +1499,7 @@ def _trim_prefix(prefix: str) -> str:
                 break
             candidate = prefix[idx + len(conn):].strip()
             if len(candidate) >= _MIN_PREFIX_LEN:
-                if best is None or len(candidate) > len(best):
+                if best is None or len(candidate) < len(best):
                     best = candidate
             start = idx + 1
     if best is None:
