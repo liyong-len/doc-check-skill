@@ -150,6 +150,18 @@ def _best_cut(prefix: str, conn: str, best: str | None, require_region: bool) ->
     return best
 
 
+def _extend_over_suffix(text: str, end: int) -> int:
+    """词尾后紧跟另一个词尾时，把名字延伸过去。
+
+    「中国建筑设计院有限公司」的非贪婪匹配会停在「设计院」，
+    余下的「有限公司」才是真正的企业形式词。
+    """
+    for s in _SUFFIXES:
+        if text.startswith(s, end):
+            return end + len(s)
+    return end
+
+
 def extract_company_names(text: str) -> list[str]:
     """抽取公司类名称，按出现顺序去重。"""
     out: list[str] = []
@@ -160,7 +172,8 @@ def extract_company_names(text: str) -> list[str]:
             continue
         if _is_form_fragment(prefix) or prefix in _NON_NAME_WORDS:
             continue
-        name = _strip_unbalanced_parens(prefix + m.group("suf"))
+        end = _extend_over_suffix(text, m.end())
+        name = _strip_unbalanced_parens(prefix + text[m.start("suf"):end])
         key = normalize_name(name)
         if key in seen:
             continue
@@ -248,11 +261,24 @@ def canonical_name(name: str) -> str:
     return _strip_leading_weak(name)
 
 
+def _extra_head_is_clean(longer: str, shorter: str) -> bool:
+    """较长的核心字号比短的多出来的部分不含弱连接词。
+
+    「联合网络通信」与「网络通信」多出来的「联合」是字号的一部分，
+    不是句子碎片，不能算同一主体。而「由北京华信科技」多出来的「由」
+    是强连接词，是句子碎片，应该算同一主体。
+    """
+    head = longer[: len(longer) - len(shorter)]
+    return not any(w in head for w in _WEAK_CONNECTORS)
+
+
 def same_entity(a: str, b: str) -> bool:
     """两个名称是否指向同一主体。
 
     核心字号相等即同一主体。此外两种关系也算：
-    - 互为**后缀**：带连接词前缀的同一写法与干净写法（「由北京华信科技」）
+    - 互为**后缀**且多出来的部分不含弱连接词：带连接词前缀的同一写法与干净写法
+      （「由北京华信科技」）。多出来的若是「联合」「和」这类字号常用字
+      （「联合网络通信」之于「网络通信」），则不是同一主体
     - 互为**前缀**且较短一方像简称（≤3 字，或以行政区划开头）：
       「北京华信」与「北京华信科技有限公司」
 
@@ -267,7 +293,7 @@ def same_entity(a: str, b: str) -> bool:
     shorter, longer = sorted([ca, cb], key=len)
     if len(shorter) < 2:
         return False
-    if longer.endswith(shorter):
+    if longer.endswith(shorter) and _extra_head_is_clean(longer, shorter):
         return True
     if longer.startswith(shorter) and (
         len(shorter) <= 3 or _starts_with_region(shorter)

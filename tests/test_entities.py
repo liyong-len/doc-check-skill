@@ -49,8 +49,11 @@ def test_form_fragment_guard_keeps_equal_length_names():
     # 形式词的严格前缀才是片段，长度相等的是真实字号
     assert extract_company_names("研究中心有限公司") == ["研究中心有限公司"]
     assert extract_company_names("设计院有限公司") == ["设计院有限公司"]
-    # 「股份」是「股份有限公司」的严格前缀，是片段
-    assert extract_company_names("中信建设集团股份有限公司") == ["中信建设集团"]
+    # 「股份」是「股份有限公司」的严格前缀，是片段：不会单独抽出一个
+    # 叫「股份有限公司」的主体（名字整体延伸到「股份有限公司」）
+    names = extract_company_names("中信建设集团股份有限公司")
+    assert "股份有限公司" not in names
+    assert names == ["中信建设集团股份有限公司"]
 
 
 def test_core_key_strips_suffix_and_region():
@@ -133,10 +136,25 @@ def test_organization_connectors_are_not_stripped_from_canonical():
 
 
 def test_extract_company_names_skips_split_form_word():
-    # 「股份有限公司」不是主体名，是形式词被从中间切开的结果
+    # 「股份有限公司」不会单独成为一个主体名
     names = extract_company_names("中标候选人：中信建设集团股份有限公司")
     assert "股份有限公司" not in names
-    assert "中信建设集团" in names
+    assert names == ["中信建设集团股份有限公司"]
+
+
+def test_weak_prefixed_core_is_not_merged_by_suffix_relation():
+    # 多出来的「联合」是字号的一部分，不是句子碎片
+    assert not same_entity("联合网络通信有限公司", "网络通信有限公司")
+    assert not same_entity("和信科技有限公司", "信科技有限公司")
+
+
+def test_strong_prefixed_core_is_still_merged():
+    assert same_entity("由北京华信科技有限公司", "北京华信科技有限公司")
+
+
+def test_name_extends_over_a_following_form_word():
+    assert extract_company_names("中国建筑设计院有限公司") == ["中国建筑设计院有限公司"]
+    assert extract_company_names("中信建设集团股份有限公司") == ["中信建设集团股份有限公司"]
 
 
 def test_group_variants_keeps_distinct_cores_apart():
