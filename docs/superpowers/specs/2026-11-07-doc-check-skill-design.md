@@ -291,16 +291,17 @@ manifest.json 同时记录受检文件的 SHA256。若下次运行时指纹不�
 
 install.ps1 与 install.sh 执行同样的步骤：
 
-1. 环境自检。查找 `py -3`、`python3`、`python`，要求版本不低于 3.9。找不到则明确报错并给出指引，不静默跳过。
+1. 环境自检与解释器选择。候选解释器按顺序尝试：`py -3.12`、`py -3.11`、`py -3.13`、`python3`、`python`、`py -3`。优先选择 3.11 与 3.12，因为 `lxml` 与 `pdfplumber` 在这些版本上的预编译轮子最完整；3.14 等最新版本常常还没有对应轮子，装依赖会失败。要求版本不低于 3.9。全部候选都不可用则明确报错并给出指引，不静默跳过。
 2. 在仓库根目录创建虚拟环境 `.venv`。Windows 路径为 `.venv\Scripts\python.exe`，POSIX 路径为 `.venv/bin/python`。
 3. 安装依赖 `pip install -r requirements.txt`。依赖为 python-docx、openpyxl、pdfplumber、lxml。
-4. 读取 `install/adapters.json`，逐个智能体适配项：
+4. 依赖自检。创建虚拟环境后立即执行一次导入自检，确认 `docx`、`openpyxl`、`pdfplumber` 四个模块均可导入。导入失败则换下一个候选解释器重建虚拟环境，全部候选都失败时给出明确报错，包含失败原因与建议的 Python 版本。
+5. 读取 `install/adapters.json`，逐个智能体适配项：
    - 探测该智能体是否安装在本机，方式是适配项声明的路径是否存在，或其命令是否在 PATH 中
    - 已安装：复制技能运行所需文件到适配项声明的目标目录，写入 `python-path.txt` 指向虚拟环境解释器，写入该智能体的入口文件
    - 未安装：跳过，记入「未安装清单」
 
 复制到适配目录的文件集合为：`SKILL.md`、`references/` 全部文件、`scripts/` 全部文件、`requirements.txt`。`docs/`、`tests/`、`install/` 不复制。入口文件内容由 `install/adapters/<agent-id>.md` 模板生成，其中写入仓库绝对路径，使智能体在任意工作目录下都能定位脚本。
-5. 打印安装结果：已装列表及其路径与用法示例、未装列表、通用兜底指引
+6. 打印安装结果：已装列表及其路径与用法示例、未装列表、通用兜底指引
 
 ### 11.2 适配表结构
 
@@ -321,26 +322,28 @@ install.ps1 与 install.sh 执行同样的步骤：
       "id": "codex",
       "name": "Codex CLI",
       "detect_paths": ["~/.codex"],
-      "mode": "prompt",
-      "prompt_dir": "~/.codex/prompts",
-      "entry_file": "doc-check.md",
+      "mode": "skill_dir",
+      "skill_dir": "~/.codex/skills/doc-check",
+      "entry": "SKILL.md",
       "usage": "/doc-check"
     },
     {
       "id": "workbuddy",
       "name": "WorkBuddy",
-      "detect_paths": ["~/.workbuddy", "~/AppData/Roaming/WorkBuddy"],
+      "detect_paths": ["~/DoubaoWork", "~/AppData/Local/DoubaoWork"],
       "mode": "skill_dir",
-      "skill_dir": "~/.workbuddy/skills/doc-check",
-      "entry": "SKILL.md"
+      "skill_dir": "~/DoubaoWork/skills/doc-check",
+      "entry": "SKILL.md",
+      "usage": "直接说「检查这批文档」"
     },
     {
       "id": "dsh",
       "name": "DSH",
-      "detect_paths": ["~/.dsh"],
+      "detect_paths": ["~/.dsh", "~/AppData/Roaming/DSH", "~/AppData/Local/DSH"],
       "mode": "skill_dir",
       "skill_dir": "~/.dsh/skills/doc-check",
-      "entry": "SKILL.md"
+      "entry": "SKILL.md",
+      "usage": "直接说「检查这批文档」"
     },
     {
       "id": "generic",
@@ -352,7 +355,18 @@ install.ps1 与 install.sh 执行同样的步骤：
 }
 ```
 
-WorkBuddy 与 DSH 的实际目录约定未经核实，表中路径是候选值。安装器依靠探测并在失败时回显实际路径，校正只需修改 adapters.json 中的对应行。`install/adapters/README.md` 记录新增一个智能体适配需要改动的位置。
+路径来源与核实状态：
+
+| 智能体 | 路径 | 核实状态 |
+|---|---|---|
+| Claude Code | `~/.claude/skills/doc-check/` | 已确认。本机存在 `~/.claude/skills/`，已有 `anatomy`、`fireworks-tech-graph` 两个技能 |
+| Codex CLI | `~/.codex/skills/doc-check/` | 已确认。本机存在 `~/.codex/skills/.system/`，其下技能使用与 Claude Code 相同的 `SKILL.md` frontmatter（`name` 与 `description` 字段），因此同一个 SKILL.md 文件可同时供两个智能体使用 |
+| WorkBuddy | `~/DoubaoWork/skills/doc-check/` | 路径已确认。本机存在 `~/DoubaoWork/skills/` 目录（当前为空），另有 `~/AppData/Local/DoubaoWork`。技能文件格式未验证 |
+| DSH | `~/.dsh/skills/doc-check/` | 未确认。本机无该目录痕迹，列为候选值 |
+
+已确认的智能体使用 `skill_dir` 模式，入口文件统一为 `SKILL.md`，安装逻辑完全相同。安装器依靠探测并在失败时回显实际路径，校正只需修改 adapters.json 中的对应行。`install/adapters/README.md` 记录新增一个智能体适配需要改动的位置。
+
+Codex 另有一处可用入口：`~/.codex/config.toml` 中的 `[marketplaces]` 与 `[plugins]` 段落支持插件式安装。但插件机制依赖 Codex 专有格式，与跨智能体目标冲突，本项目不使用。
 
 ### 11.3 通用兜底
 
@@ -403,9 +417,9 @@ WorkBuddy 与 DSH 的实际目录约定未经核实，表中路径是候选值�
 
 ## 16. 待确认事项
 
-以下内容在实现前需要向需求方确认，不影响总体架构：
+2026-11-07 已在本机完成一次路径与运行时探测，结果已并入第 11 节。剩余待确认事项：
 
-1. WorkBuddy 与 DSH 的实际配置目录与技能加载约定。适配表中目前为候选路径。
-2. Codex 的 `~/.codex/prompts` 是否为当前版本生效的自定义提示目录。
-3. 各同事的 Python 环境是否可满足 python-docx 与 pdfplumber 的安装要求。
+1. WorkBuddy 的技能文件格式未验证。已知其技能目录为 `~/DoubaoWork/skills/`，但未验证它是否同样使用 `SKILL.md` 加 `name` 与 `description` frontmatter。安装时若发现格式不符，再补一份适配模板。
+2. DSH 的实际配置目录未知，本机无任何痕迹。需要一位实际使用 DSH 的同事提供其配置路径，或在安装器中对该适配项做交互式路径询问。
+3. Python 版本兼容性。已知本机仅有 `py` 启动器且为 3.14.0，`lxml` 与 `pdfplumber` 在 3.14 上可能缺少预编译轮子。安装器已按 3.11 与 3.12 优先的顺序设计候选解释器，但仍需在实现后实测。若同事机器上连 3.11 与 3.12 都没有，需给出安装 Python 的指引。
 4. 严重级别 P0 至 P3 的划分是否需要按公司内部评审标准调整。
