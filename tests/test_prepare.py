@@ -76,6 +76,44 @@ def test_prepare_keeps_partially_scanned_document():
     assert has_text is True
 
 
+def test_prepare_ocr_reason_does_not_repeat_need_ocr():
+    """扫描件原因只说一次「需 OCR」，其余说明不能重复同一句话。"""
+    from prepare import _ocr_failure
+    doc = {
+        "file": "scan.pdf", "path": "scan.pdf",
+        "notes": [
+            "第 1 页无文本层，疑似扫描件，需 OCR",
+            "全文无文本层，疑似扫描件，需 OCR，当前不做内容判定",
+        ],
+        "blocks": [{"kind": "paragraph", "text": ""}],
+    }
+    failure, has_text = _ocr_failure(doc)
+    reason = failure["reason"]
+    assert reason.count("需 OCR") == 1, reason
+    assert "第 1 页无文本层" in reason
+    assert "全文无文本层" not in reason
+    assert "未做任何内容判定" in reason
+
+
+def test_prepare_ocr_reason_lists_pages_of_partial_scan():
+    """部分有文本层的文档要点名缺文本层的页。"""
+    from prepare import _ocr_failure
+    doc = {
+        "file": "mixed.pdf", "path": "mixed.pdf",
+        "notes": [
+            "第 2 页无文本层，疑似扫描件，需 OCR",
+            "第 3 页无文本层，疑似扫描件，需 OCR",
+        ],
+        "blocks": [{"kind": "paragraph", "text": "有文字"}],
+    }
+    failure, has_text = _ocr_failure(doc)
+    reason = failure["reason"]
+    assert reason.count("需 OCR") == 1, reason
+    assert "第 2 页无文本层" in reason
+    assert "第 3 页无文本层" in reason
+    assert "该文档无文本层" not in reason
+
+
 def test_prepare_excludes_textless_pdf_from_documents(tmp_path, monkeypatch):
     """无文本层的扫描件不得被当成已检查文档——这是整批任务的核心要求。"""
     import prepare as prepare_module
