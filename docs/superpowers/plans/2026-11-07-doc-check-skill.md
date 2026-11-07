@@ -2318,6 +2318,42 @@ def test_standard_four_level_structure_is_not_flagged():
     assert [i for i in result["issues"] if i["category"] == "标题层级体例"] == []
 
 
+def test_heading_level_jump_is_flagged():
+    doc = _doc("a.docx", [])
+    doc["blocks"] = [
+        {"index": 0, "kind": "paragraph", "text": "第一章 总则", "section_path": "",
+         "style": {"is_heading": True, "heading_level": 1}},
+        {"index": 1, "kind": "paragraph", "text": "3.1 实施", "section_path": "",
+         "style": {"is_heading": True, "heading_level": 3}},
+    ]
+    result = analyze([doc])
+    issue = next(i for i in result["issues"] if i["category"] == "标题层级体例")
+    assert "跳级" in issue["description"]
+
+
+def test_figure_numbering_gap_is_flagged():
+    docs = [_doc("a.docx", [
+        _p("图1-1 总体架构"),
+        _p("图1-3 数据流"),
+    ])]
+    result = analyze(docs)
+    issue = next(i for i in result["issues"] if i["category"] == "图表题注体例")
+    assert "缺号" in issue["description"]
+
+
+def test_caption_number_not_followed_by_counter_is_ignored():
+    # 「见图 3 节」「（2）个标段」「（2024）」都不是编号
+    docs = [_doc("a.docx", [
+        _p("见图 3 节可知。"),
+        _p("本项目分为（2）个标段。"),
+        _p("签署时间（2024）。"),
+    ])]
+    result = analyze(docs)
+    cats = [i["category"] for i in result["issues"]]
+    assert "图表题注体例" not in cats
+    assert "引用标记" not in cats
+
+
 def test_figure_caption_styles_mixed():
     docs = [_doc("a.docx", [
         _p("如图1-1所示"),
@@ -2711,9 +2747,74 @@ def check_heading_numbering(documents: list[dict]) -> list[dict]:
     return issues
 
 
+_FIG_NUM_RE = re.compile(r"[图表]\s*(\d+)[-－](\d+)")
+
+
+def check_heading_level_jumps(documents: list[dict]) -> list[dict]:
+    """标题层级体例：标题层级不得跳级（如 H1 直接跳 H3）。"""
+    issues = []
+    for doc in documents:
+        prev_level = 0
+        prev_heading = ""
+        for _, b in _text_blocks([doc]):
+            style = b.get("style") or {}
+            if not style.get("is_heading"):
+                continue
+            level = int(style.get("heading_level") or 0)
+            if level <= 0:
+                continue
+            if prev_level and level > prev_level + 1:
+                issues.append(make_finding(
+                    severity="P2", category="标题层级体例", detector="deterministic",
+                    confidence="确定", file=doc["file"],
+                    locator={"type": "paragraph", "index": b.get("index", 0),
+                             "section_path": b.get("section_path", "")},
+                    quote=b.get("text", "")[:60],
+                    description=(
+                        f"标题层级跳级：上一级标题是第 {prev_level} 级"
+                        f"（{prev_heading}），本处直接是第 {level} 级。"
+                    ),
+                    suggestion="补齐缺失的中间层级，或调整本标题的级别。",
+                ))
+            prev_level = level
+            prev_heading = b.get("text", "").strip()[:20]
+    return issues
+
+
+def check_figure_numbering_gaps(documents: list[dict]) -> list[dict]:
+    """图表题注体例：图表编号应连续，不应跳号。"""
+    issues = []
+    for doc in documents:
+        by_chapter: dict[str, list[int]] = {}
+        for _, b in _text_blocks([doc]):
+            for m in _FIG_NUM_RE.finditer(b.get("text", "")):
+                by_chapter.setdefault(m.group(1), []).append(int(m.group(2)))
+        for chapter, nums in sorted(by_chapter.items()):
+            uniq = sorted(set(nums))
+            if len(uniq) < 2:
+                continue
+            missing = [n for n in range(1, uniq[-1] + 1) if n not in uniq]
+            if not missing:
+                continue
+            issues.append(make_finding(
+                severity="P2", category="图表题注体例", detector="deterministic",
+                confidence="确定", file=doc["file"], locator={"type": "file"},
+                quote=f"图{chapter}-{uniq[0]}",
+                description=(
+                    f"第 {chapter} 章的图表编号不连续，缺号："
+                    + "、".join(str(n) for n in missing)
+                    + f"（现有编号到 {uniq[-1]}）。"
+                ),
+                suggestion="补齐缺号，或重新连续编号。",
+            ))
+    return issues
+
+
 def check_conventions(documents: list[dict]) -> list[dict]:
     issues = []
     issues += check_heading_numbering(documents)
+    issues += check_heading_level_jumps(documents)
+    issues += check_figure_numbering_gaps(documents)
     issues += _mixed_style_issue(
         documents, "图表题注体例", _CAPTION_PATTERNS, "P2", prefix="图表题注写法"
     )
