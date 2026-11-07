@@ -67,9 +67,13 @@ def _disambiguate(docs: list[dict]) -> list[str]:
     ids = []
     for p in paths:
         try:
-            ids.append(p.relative_to(common).as_posix())
+            rel = p.relative_to(common)
         except ValueError:
-            ids.append(p.name)
+            rel = None
+        if rel is None or str(rel) == ".":
+            ids.append(p.name)      # 同一个文件被传了两次
+        else:
+            ids.append(rel.as_posix())
     counts: dict[str, int] = {}
     for i in ids:
         counts[i] = counts.get(i, 0) + 1
