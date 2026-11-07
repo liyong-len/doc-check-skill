@@ -68,3 +68,16 @@ def test_analyze_ignores_low_confidence_styles():
     docs = [_doc("a.pdf", [_para("页内容", _style(confidence="low", font_ea=None))])]
     result = analyze(docs)
     assert result["issues"] == []
+
+
+def test_deviations_in_same_paragraph_have_distinct_ids():
+    # 同一段里西文字体与中文字体都偏离，是两条不同的问题，不能撞 finding id
+    docs = [_doc("a.docx", [
+        _para("正常段落一", _style()),
+        _para("正常段落二", _style()),
+        _para("异常段落", _style(font_latin="Arial", font_ea="仿宋")),
+    ])]
+    result = analyze(docs)
+    ids = [i["id"] for i in result["issues"]]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2

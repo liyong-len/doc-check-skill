@@ -62,3 +62,24 @@ def test_leading_weak_connector_is_not_a_second_entity():
     ])]
     result = analyze(docs)
     assert [i for i in result["issues"] if i["category"] in ("主体名称", "主体串写")] == []
+
+
+def test_file_name_distinguishes_entities():
+    # 文件名里出现了其中一个主体，说明这些主体是被显式区分的，不报混主体
+    doc = _doc("北京华信科技有限公司投标文件.docx", [
+        "北京华信科技有限公司为主体。",
+        "上海远大信息技术有限公司为协作方。",
+    ])
+    result = analyze([doc])
+    assert [i for i in result["issues"] if i["category"] == "主体串写"] == []
+
+
+def test_section_heading_distinguishes_entities():
+    doc = _doc("a.docx", [
+        "北京华信科技有限公司为主体。",
+        "上海远大信息技术有限公司为协作方。",
+    ])
+    doc["sections"] = [{"path": "上海远大信息技术有限公司", "level": 1,
+                        "heading": "上海远大信息技术有限公司", "start": 0, "end": 1}]
+    result = analyze([doc])
+    assert [i for i in result["issues"] if i["category"] == "主体串写"] == []
