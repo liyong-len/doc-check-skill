@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "detect_paths": ["~/.claude"],
+      "detect_commands": ["claude"],
+      "mode": "skill_dir",
+      "skill_dir": "~/.claude/skills/doc-check",
+      "entry": "SKILL.md",
+      "usage": "/doc-check 或直接说「检查这批文档」"
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "detect_paths": ["~/.codex"],
+      "detect_commands": ["codex"],
+      "mode": "skill_dir",
+      "skill_dir": "~/.codex/skills/doc-check",
+      "entry": "SKILL.md",
+      "usage": "/doc-check"
+    },
+    {
+      "id": "workbuddy",
+      "name": "WorkBuddy",
+      "detect_paths": ["~/DoubaoWork", "~/AppData/Local/DoubaoWork"],
+      "detect_commands": [],
+      "mode": "skill_dir",
+      "skill_dir": "~/DoubaoWork/skills/doc-check",
+      "entry": "SKILL.md",
+      "usage": "直接说「检查这批文档」"
+    },
+    {
+      "id": "dsh",
+      "name": "DSH",
+      "detect_paths": ["~/.dsh", "~/AppData/Roaming/DSH", "~/AppData/Local/DSH"],
+      "detect_commands": [],
+      "mode": "skill_dir",
+      "skill_dir": "~/.dsh/skills/doc-check",
+      "entry": "SKILL.md",
+      "usage": "直接说「检查这批文档」"
+    },
+    {
+      "id": "generic",
+      "name": "通用（任意智能体）",
+      "detect_paths": [],
+      "detect_commands": [],
+      "mode": "manual",
+      "usage": "把 install/adapters/generic.md 的片段与仓库绝对路径贴进你的智能体项目说明"
+    }
+  ]
+}

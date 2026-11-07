@@ -1,0 +1,3 @@
+# 安装脚本必须保持 LF 行尾：Windows 上 git 默认会把 LF 转成 CRLF，
+# CRLF 的 shell 脚本在 Git Bash / Linux 下会因 shebang 与行尾多出 \r 而无法执行。
+install/install.sh text eol=lf
