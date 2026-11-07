@@ -328,3 +328,44 @@ def test_render_tolerates_null_consistency_issues(tmp_path):
     render(work, out)
     assert out.exists()
     assert "文档检查报告" in out.read_text(encoding="utf-8")
+
+
+# --- 修复波 B2：R70 报告的规则表只声明真正跑的检查 ---
+
+
+def test_report_legend_does_not_declare_checks_that_do_not_run():
+    """规则表是报告自己的说明，不能声明没有实现的检查。
+
+    「缺重复表头」「编号越界」都不在实现里：docx 抽取器不读 w:tblHeader，
+    引用编号越界需要人工核对。
+    """
+    from render import _RULES
+
+    descriptions = " ".join(desc for _, desc in _RULES)
+    assert "缺重复表头" not in descriptions
+    assert "编号越界" not in descriptions
+
+
+def test_report_legend_covers_every_category_the_two_layers_produce():
+    from render import _RULES
+
+    labels = {name for name, _ in _RULES}
+    deterministic = [
+        "字体一致性", "段落格式一致性", "标题层级体例", "图表题注体例", "表格体例",
+        "列表与编号", "引用标记", "数字与单位", "主体名称", "主体串写", "术语与缩写",
+    ]
+    semantic = [
+        "错别字用词", "标点格式", "前后矛盾", "主体名误用", "引用张冠李戴",
+        "待补充内容", "数字逻辑", "表述不清", "术语一致性",
+    ]
+    for category in deterministic + semantic:
+        assert category in labels, category
+
+
+def test_report_legend_heading_rule_matches_implementation():
+    """标题规则是「同一层级内」比较，不是「同一文件内」。"""
+    from render import _RULES
+
+    legend = dict(_RULES)
+    assert "同一层级内" in legend["标题层级体例"]
+    assert "跳级" in legend["标题层级体例"]

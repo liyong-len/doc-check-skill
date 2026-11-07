@@ -53,15 +53,30 @@ macOS / Linux：
 bash install/install.sh
 ```
 
+重跑安装器覆盖已安装的副本（等价于直接再跑一次，`--update` 只是把意图写出来）：
+
+```bash
+bash install/install.sh --update
+```
+
 安装器会依次做完这些事：
 
-1. 挑一个可用的 Python（依次尝试 3.12、3.11、3.13、`python3`、`python`、`py -3`，要求 3.9 及以上）。
+1. 挑一个可用的 Python。候选顺序两个安装器完全一致：
+   `py -3.12`、`py -3.11`、`py -3.13`、`python3.12`、`python3.11`、`python3.13`、
+   `python3`、`python`、`py -3`，要求 3.9 及以上。
    优先 3.11 / 3.12，是因为 `lxml` 与 `pdfplumber` 在最新的 Python 上常常没有预编译轮子。
+   判定只看退出码与标准输出里的版本号：解释器往 stderr 写一句提醒，不影响它被选中。
 2. 在**仓库根目录**建 `.venv` 虚拟环境。
 3. 按 `requirements.txt` 装四个依赖：`python-docx`、`openpyxl`、`pdfplumber`、`lxml`。
 4. 探测本机装了哪些智能体，把 `SKILL.md`、`references/`、`scripts/`、`requirements.txt`
-   复制到各自的技能目录，并写入该智能体的 `AGENT.md` 与 `python-path.txt`。
+   复制到各自的技能目录，并写入该智能体的 `AGENT.md`、`AGENTS.md` 与 `python-path.txt`。
+   复制过去之前，入口文件 `SKILL.md` 会被改写成绝对路径：
+   命令里的解释器取自 `python-path.txt`，脚本取自技能目录本身。
+   仓库里删掉的文件会从技能目录里清掉，不会留下过时的脚本。
 5. 打印每个已安装智能体的用法；没检测到的智能体会被跳过并列出。
+
+两个安装脚本只在 shell 语法上不同，行为一致：装到智能体目录那一步由
+`install/install_skill.py` 完成，两边调用的是同一个文件。
 
 各智能体的技能目录与核实状态：
 
@@ -92,14 +107,17 @@ Claude Code 与 Codex CLI 还可以直接用 `/doc-check`。
 `.venv` 里（Windows 是 `.venv\Scripts\python.exe`，macOS / Linux 是 `.venv/bin/python`）；
 每个已安装的技能目录里还有 `python-path.txt`，写的就是它的绝对路径。
 系统里没装 `python-docx` 的 `python` 会直接 ImportError。
+下面的命令块里用 `.venv` 里的解释器示意；换机器时把它换成对应的路径即可。
 
 ```bash
 # ① 抽取与确定性检查
-python scripts/prepare.py --files 投标文件.docx 报价表.xlsx --depth standard --work .doc-check-work
+.venv/Scripts/python.exe scripts/prepare.py --files 投标文件.docx 报价表.xlsx --depth standard --work .doc-check-work
 # ② 读 .doc-check-work/chunks.json 与 references/content-rules.md，把结论写进 .doc-check-work/findings.json
 # ③ 渲染报告
-python scripts/render.py --work .doc-check-work --out report.html
+.venv/Scripts/python.exe scripts/render.py --work .doc-check-work --out report.html
 ```
+
+macOS / Linux 上第一行换成 `.venv/bin/python`。
 
 阶段①产出四个 JSON：`docs.json`、`consistency.json`、`chunks.json`、`manifest.json`。
 抽取失败的文件会列在 `manifest.json` 的 `failures` 里，报告的 §0 会点名说明。
@@ -107,7 +125,7 @@ python scripts/render.py --work .doc-check-work --out report.html
 复查模式（改完一轮再查，只看新增、已修复与未修复）：
 
 ```bash
-python scripts/render.py --work .doc-check-work --out report.html --baseline .doc-check-work/last-findings.json
+.venv/Scripts/python.exe scripts/render.py --work .doc-check-work --out report.html --baseline .doc-check-work/last-findings.json
 ```
 
 ## 深度档位
@@ -132,15 +150,15 @@ SKILL.md            智能体主指令
 AGENTS.md           通用接入说明
 scripts/            抽取、统计、分片、渲染
 references/         语义规则、格式规则、严重级别与 schema、报告规范
-install/            安装器与智能体适配表
+install/            安装器与智能体适配表（install_skill.py 是两个安装器共用的安装阶段）
 tests/              单元测试、端到端测试、样本生成、金标评估
 ```
 
 ## 开发
 
 ```bash
-python -m pytest -v          # 用 .venv 里的解释器
-python tests/make_samples.py # 重新生成 tests/samples/ 下的样本
+.venv/Scripts/python.exe -m pytest -v          # macOS / Linux 用 .venv/bin/python
+.venv/Scripts/python.exe tests/make_samples.py # 重新生成 tests/samples/ 下的样本
 ```
 
 模型层不进 CI（输出有不确定性）。评估方法：准备一批人工标注的样本文档，

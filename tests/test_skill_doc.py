@@ -85,3 +85,23 @@ def test_agents_md_makes_install_reference_conditional():
     text = _read("AGENTS.md")
     assert "install/" in text
     assert "README" not in text
+
+
+# --- 修复波 B2：R65 语义层的定级口径与 R73 入口文件的自给自足 ---
+
+
+def test_skill_md_confidence_does_not_depend_on_stage_one():
+    """阶段①不产出九类语义类别，拿它当门槛会让语义层永远写不出「确定」。"""
+    text = _read("SKILL.md")
+    assert "不以阶段①有没有对应依据为准" in text
+    assert "若在阶段①有对应依据" not in text
+    assert "证据链" in text
+
+
+def test_skill_md_explains_how_to_resolve_interpreter_and_scripts():
+    """入口文件必须说清楚解释器与脚本在哪儿，否则智能体会用错解释器。"""
+    text = _read("SKILL.md")
+    assert "python-path.txt" in text
+    assert "scripts/" in text
+    assert "references/" in text
+    assert ".venv" in text

@@ -288,3 +288,28 @@ def test_name_is_not_extended_over_a_form_word_inside_brackets():
     assert extract_company_names("北京华信科技(集团)有限公司") == [
         "北京华信科技(集团)有限公司"
     ]
+
+
+# --- 修复波 B2：R66 字号长度上限的实测口径要写进文档，也要锁住 ---
+
+
+def test_long_core_truncation_starts_at_31_characters():
+    """字号 30 个字能完整匹配，31 个字起丢的是开头的字。
+
+    丢字不会导致整条抽不到：名字始终会被抽出来，只是前面少几个字。
+    文档（references/format-rules.md 的已知局限）按这个口径写。
+    """
+    from entities import extract_company_names
+
+    core30 = "甲" + "乙" * 29
+    core31 = "甲" + "乙" * 30
+
+    got30 = extract_company_names(core30 + "有限公司")
+    assert len(got30) == 1
+    assert got30[0].startswith("甲"), "30 个字应当完整匹配"
+    assert got30[0] == core30 + "有限公司"
+
+    got31 = extract_company_names(core31 + "有限公司")
+    assert len(got31) == 1
+    assert not got31[0].startswith("甲"), "31 个字起丢掉的是开头的字"
+    assert got31[0] == core31[1:] + "有限公司"

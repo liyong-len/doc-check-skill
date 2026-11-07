@@ -11,6 +11,22 @@ description: 检查一组投标文档的内容与格式问题，产出单文件 
 
 用户给出一份或多份文档（docx / xlsx / pdf / md / txt），希望检查其中的错别字、名称错误、引用问题、体例混乱、前后矛盾、待补充内容、多主体写混、字体排版不一致。
 
+## 运行环境
+
+**技能被装到智能体目录后**（技能目录 = 本文件所在的目录）：
+
+- 解释器：同目录 `python-path.txt` 里的绝对路径（那是装了 python-docx、openpyxl、pdfplumber、lxml 的那个 Python）
+- 脚本：同目录 `scripts/`
+- 规则文档：同目录 `references/`
+
+安装器会把下面三阶段的命令改写成绝对路径（解释器与脚本都在技能目录下），照抄执行即可。
+命令仍是相对路径时（例如本文件被直接复制到别处、没经过安装器改写），按上面三条自行拼装：
+解释器取 `python-path.txt`，脚本取 `<技能目录>/scripts/`，规则文档取 `<技能目录>/references/`。
+
+**在仓库里直接使用时**：解释器是仓库根目录的 `.venv`
+（Windows 是 `.venv\Scripts\python.exe`，macOS / Linux 是 `.venv/bin/python`），
+脚本是仓库根目录的 `scripts/`。
+
 ## 三阶段执行流程
 
 必须严格按三阶段执行。不要跳过阶段①直接读原始文档，不要自己编造阶段①的统计结果。
@@ -34,7 +50,7 @@ python scripts/prepare.py --files <文件1> <文件2> --depth <档位> --work .d
 1. 读 `references/content-rules.md`，这是语义检查的规则与定级标准。
 2. 读 `references/severity.md`，确认 severity 与 confidence 的判定口径，以及阶段① 的 `consistency.json` 有哪些键。
 3. 读 `references/report-spec.md`，知道报告里哪几张表是按字面量筛的——类别名或置信度写错字面量，条目会从这些表里消失。
-4. 读 `.doc-check-work/chunks.json`，逐片检查；判断「这条问题在阶段①有没有依据」时对照 `.doc-check-work/consistency.json`。
+4. 读 `.doc-check-work/chunks.json`，逐片检查；判断「这条问题在阶段①有没有对应依据」时对照 `.doc-check-work/consistency.json`。
 5. 把结果写入 `.doc-check-work/findings.json`（一个 JSON 数组，空数组表示没问题），结构见 `references/severity.md`。
 
 检查纪律：
@@ -47,7 +63,13 @@ python scripts/prepare.py --files <文件1> <文件2> --depth <档位> --work .d
   「标题层级体例」「图表题注体例」「表格体例」「列表与编号」「引用标记」「数字与单位」
   「主体名称」「主体串写」「术语与缩写」**——这些是确定性层的类别，脚本已经报过，写一遍就是重复报同一个问题。
   尤其注意：「主体串写」是确定性层的文件级 P0，语义层对应的段落级类别叫「主体名误用」。
-- 阶段①的 `consistency.json` 里已有确定性问题，**不要在 findings.json 里重复写一遍**。findings.json 只放语义层的问题。语义层发现的问题若在阶段①有对应依据（如主体名在阶段①的主体清单里出现过、阶段①已指出同一处格式偏离），confidence 写「确定」，否则写「疑似 · 需人工核实」。阶段①不做算术校验，合计与分项是否相符只能由语义层自己判断。
+- 阶段①的 `consistency.json` 里已有确定性问题，**不要在 findings.json 里重复写一遍**。findings.json 只放语义层的问题。
+- **语义层的 confidence 不以阶段①有没有对应依据为准。** 阶段①只做格式与体例检查，
+  它不产出前后矛盾、错别字、引用张冠李戴这些语义类别，拿阶段①当门槛会让语义层永远写不出「确定」。
+  判定口径是：**能指出文档内的证据链**——两处互相冲突的原文、合计与分项算出来对不上、
+  段落里的名称与全文主体不符——就写「确定」；**判断依赖文档之外的事实**——企业名称是否真实存在、
+  引用的文献是否真实存在、法规是否现行有效——一律写「疑似 · 需人工核实」。
+- 阶段①不做算术校验，合计与分项是否相符只能由语义层自己判断。
 - 只有你能在文档里指出证据链（互相冲突的两处原文、算出来的合计与分项、能对上的主体名）时才写「确定」；
   凡是靠推测得出的、或者需要文档外事实才能成立的结论，一律写「疑似 · 需人工核实」。
 
@@ -91,7 +113,8 @@ python scripts/render.py --work .doc-check-work --out report.html --baseline .do
 
 **扫描版 PDF 怎么办？** 阶段①会报「需 OCR，当前不支持」。如实告知用户该文件未被检查，不要编造检查结果。
 
-**没有 Python 环境怎么办？** 告知用户需要 Python 3.9 及以上。若本仓库已带 `install/` 目录，指向 `install/install.ps1`（Windows）或 `install/install.sh`（macOS/Linux）；若尚未安装，说明需要先获取仓库再运行安装脚本。
+**没有 Python 环境怎么办？** 告知用户需要 Python 3.9 及以上。技能目录里的 `python-path.txt` 指向的就是装好依赖的那个解释器；
+若该文件不存在或路径已失效，说明技能没装好，请重新运行仓库里的安装脚本（Windows 用 `install/install.ps1`，macOS / Linux 用 `install/install.sh`）。
 
 **上下文放不下怎么办？** 按 chunk 顺序处理，findings 分批落盘到 findings.json，不要一次性载入全部原文。
 

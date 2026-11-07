@@ -31,15 +31,18 @@ _REGIONS = [
 # 强连接词是句子层面的标记，其后几乎必然是字号，可以裁掉前缀：
 #   「本项目由北京华信科技有限公司」「甲方及乙方共同委托…」
 #
-# 弱连接词同时也是字号里常见的字——「和而泰」「中国联合」「清华同方」
-# 都是真实字号的一部分。弱连接词单独出现时不能裁，否则真实公司名会被截断
+# 切分连接词同时也是字号里常见的字——「和而泰」「中国联合」「清华同方」
+# 都是真实字号的一部分。切分连接词单独出现时不能裁，否则真实公司名会被截断
 # （「和而泰智能控制股份有限公司」会被截成「而泰智能控制股份有限公司」）。
+#
+# 它与 _CANONICAL_STRIP_CONNECTORS 是两组不同的词：这里的一组只用来判断
+# 「后面是不是另一个主体的起点」，真正裁前缀的是 _CANONICAL_STRIP_CONNECTORS。
 _STRONG_CONNECTORS = [
     "以及", "并且", "我方", "贵司", "双方", "各方", "甲方", "乙方", "中标人",
     "投标人", "供应商", "承包人", "采购方", "招标人", "招标代理",
     "受托", "委托", "由",
 ]
-_WEAK_CONNECTORS = [
+_SPLIT_CONNECTORS = [
     "联合", "协作", "为", "和", "同", "经", "并", "及", "与", "是", "从",
     "给", "向", "对", "或", "代理",
 ]
@@ -148,7 +151,7 @@ def _trim_prefix(prefix: str) -> str:
     best = None
     for conn in _STRONG_CONNECTORS:
         best = _best_cut(prefix, conn, best, require_region=False)
-    for conn in _WEAK_CONNECTORS:
+    for conn in _SPLIT_CONNECTORS:
         best = _best_cut(prefix, conn, best, require_region=True)
     if best is None:
         return prefix.strip()
@@ -196,7 +199,7 @@ def _has_name_boundary(text: str) -> bool:
     for conn in _STRONG_CONNECTORS:
         if conn in text:
             return True
-    for conn in _WEAK_CONNECTORS:
+    for conn in _SPLIT_CONNECTORS:
         idx = text.find(conn)
         while idx >= 0:
             if _starts_with_region(text[idx + len(conn):]):
@@ -433,7 +436,7 @@ def _extra_head_is_clean(longer: str, shorter: str) -> bool:
     是强连接词，是句子碎片，应该算同一主体。
     """
     head = longer[: len(longer) - len(shorter)]
-    if any(w in head for w in _WEAK_CONNECTORS):
+    if any(w in head for w in _SPLIT_CONNECTORS):
         return False
     return not _ends_with_industry_word(head)
 

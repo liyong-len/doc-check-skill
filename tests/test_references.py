@@ -132,10 +132,30 @@ def test_format_rules_states_region_retaining_rule():
 
 
 def test_format_rules_states_suffix_condition():
-    # 互为后缀还要多出来的那部分不含弱连接词，
+    # 互为后缀还要多出来的那部分不含切分连接词，
     # 否则「联合网络通信」会被并进「网络通信」
     text = _read("format-rules.md")
-    assert "不含弱连接词" in text
+    assert "不含切分连接词" in text
+
+
+def test_format_rules_distinguishes_the_two_connector_lists():
+    """两组连接词不能都叫「弱连接词」，否则会被当成同一组。
+
+    一组是规范核心字号去前缀时剥的（11 项），一组是抽取时判断
+    「后面是不是另一个主体的起点」的（15 项）。
+    """
+    text = _read("format-rules.md")
+    assert "弱连接词" in text
+    assert "切分连接词" in text
+    # 抽取时用的那一组是 15 项，规范核心用的那一组是 11 项
+    assert "联合、协作、为、和、同、经、并、及、与、是、从、给、向、对、或、代理" in text
+    assert "为、经、并、及、与、是、从、给、向、对、或" in text
+
+
+def test_format_rules_states_min_prefix_len_guard():
+    """连接词不是无条件裁的：裁完至少要剩下 4 个字。"""
+    text = _read("format-rules.md")
+    assert "_MIN_PREFIX_LEN = 4" in text
 
 
 def test_format_rules_has_known_limitations_section():
@@ -198,3 +218,48 @@ def test_reference_docs_explain_relative_file_identity():
         text = _read(name)
         assert "report.docx" in text, name
         assert "相对路径" in text, name
+
+
+# --- 修复波 B2：R65 / R67 语义层定级与 consistency.json 的键要说准 ---
+
+
+def test_severity_doc_does_not_require_stage_one_evidence_for_certain():
+    """阶段①不产出九类语义类别，拿它当门槛会让语义层永远写不出「确定」。
+
+    判定口径是「能指出文档内的证据链」，不是「阶段①有没有对应依据」。
+    """
+    text = _read("severity.md")
+    assert "不以阶段①有没有对应依据为准" in text
+    assert "要能在阶段①的结论里找到依据" not in text
+
+
+def test_severity_doc_states_evidence_chain_rule():
+    text = _read("severity.md")
+    assert "证据链" in text
+    assert "合计与分项" in text
+    assert "文档外的事实" in text
+
+
+def test_severity_doc_describes_entities_names_keyed_by_core():
+    """entities.names 按规范核心字号归并：同一主体的两种写法只留一条。"""
+    text = _read("severity.md")
+    row = [line for line in text.splitlines() if "entities.names" in line]
+    assert row, "severity.md 里没有 entities.names 那一行"
+    assert "canonical_core" in row[0] or "规范核心字号" in row[0]
+
+
+def test_severity_doc_says_per_file_is_not_deduplicated():
+    """entities.per_file 只在段内去重，跨段落不合并。"""
+    text = _read("severity.md")
+    row = [line for line in text.splitlines() if "entities.per_file" in line]
+    assert row, "severity.md 里没有 entities.per_file 那一行"
+    assert "去重" in row[0]
+    assert "跨段落不合并" in row[0] or "自己先去重" in row[0]
+
+
+def test_format_rules_states_truncation_boundary():
+    """字号长度的实测口径：30 个字完整匹配，31 个字起丢开头的字。"""
+    text = _read("format-rules.md")
+    assert "30 个字仍能完整匹配" in text
+    assert "31 个字起丢开头的字" in text
+    assert "不会导致整条抽不到" in text
