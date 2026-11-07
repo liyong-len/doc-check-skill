@@ -1010,7 +1010,9 @@ def extract_pdf(path: Path) -> dict:
         {"font": k[0], "size": k[1], "count": v}
         for k, v in sorted(merged.items(), key=lambda kv: -kv[1])
     ]
-    if pages and all(not b["text"].strip() for b in blocks):
+    if pages == 0:
+        notes.append("PDF 没有页面，无法读取，需 OCR，当前不支持")
+    elif all(not b["text"].strip() for b in blocks):
         notes.append("全文无文本层，疑似扫描件，需 OCR，当前不做内容判定")
 
     return {
@@ -3252,6 +3254,34 @@ def _block_text(block: dict) -> str:
     return block.get("text", "")
 
 
+def _split_table(block: dict, max_chars: int) -> list[dict]:
+    """把超出上限的表格按行拆成多块。
+
+    xlsx 的一个 sheet 就是一个表格块，几千行的表在 deep 档位下
+    会成为唯一一块超大分片，模型一次读不完。
+    """
+    text = _block_text(block)
+    if len(text) <= max_chars:
+        return [block]
+    rows = block.get("rows") or []
+    if len(rows) < 2:
+        return [block]
+    parts: list[dict] = []
+    current: list[list[dict]] = []
+    size = 0
+    for row in rows:
+        row_len = sum(len(c.get("text", "")) for c in row) + len(row)
+        if current and size + row_len > max_chars:
+            parts.append({**block, "rows": current})
+            current = []
+            size = 0
+        current.append(row)
+        size += row_len
+    if current:
+        parts.append({**block, "rows": current})
+    return parts
+
+
 def _neighbors(blocks: list[dict], i: int, window: int) -> dict:
     if window <= 0:
         return {"prev": "", "next": ""}
@@ -3307,13 +3337,14 @@ def build_chunks(documents: list[dict], depth: str = "standard") -> list[dict]:
             seq += 1
 
         for block in blocks:
-            text = _block_text(block)
-            if buf_len and buf_len + len(text) > max_chars:
-                flush(buffer)
-                buffer = []
-                buf_len = 0
-            buffer.append(block)
-            buf_len += len(text) + 1
+            for piece in _split_table(block, max_chars):
+                text = _block_text(piece)
+                if buf_len and buf_len + len(text) > max_chars:
+                    flush(buffer)
+                    buffer = []
+                    buf_len = 0
+                buffer.append(piece)
+                buf_len += len(text) + 1
         flush(buffer)
     return chunks
 ```
@@ -3468,11 +3499,9 @@ def _ocr_failure(doc: dict) -> tuple[dict | None, bool]:
         if b.get("kind") == "paragraph"
     )
     reason = "需 OCR，当前不支持。"
-    reason += (
-        "该文档无文本层，未做任何内容判定。"
-        if not has_text
-        else " " + " ".join(notes)
-    )
+    if not has_text:
+        reason += "该文档无文本层，未做任何内容判定。"
+    reason += " " + " ".join(notes)
     return {"file": doc["file"], "path": doc["path"], "reason": reason}, has_text
 
 
@@ -3487,7 +3516,7 @@ def prepare(files: list[Path], depth: str, work: Path) -> dict:
         if not path.exists():
             failures.append({
                 "file": path.name,
-                "path": str(path),
+                "path": str(path.resolve()),
                 "reason": "文件不存在",
             })
             continue
@@ -3518,7 +3547,8 @@ def prepare(files: list[Path], depth: str, work: Path) -> dict:
 
     return {
         "documents": len(documents),
-        "failures": len(failures),
+        "failures": failures,
+        "failure_count": len(failures),
         "chunks": len(chunks),
         "issues": len(consistency.get("issues", [])),
         "work": str(work.resolve()),
@@ -3536,11 +3566,13 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     result = prepare([Path(f) for f in args.files], args.depth, Path(args.work))
-    print(f"已抽取 {result['documents']} 份文档，{result['failures']} 份失败")
+    print(f"已抽取 {result['documents']} 份文档，{result['failure_count']} 份失败")
     print(f"确定性检查发现 {result['issues']} 个问题，分片 {result['chunks']} 片")
     print(f"工作目录：{result['work']}")
     if result["failures"]:
         print("未能检查的文件见 manifest.json 的 failures 字段", file=sys.stderr)
+    if result["documents"] == 0 and result["failures"]:
+        return 1   # 一份都没检查成功，调用方必须能察觉
     return 0
 
 
