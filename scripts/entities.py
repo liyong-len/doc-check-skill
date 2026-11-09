@@ -46,6 +46,22 @@ def _load_regions() -> list[str]:
 
 _REGIONS = _load_regions()
 
+# 国家前缀（不是行政区划，单独一张表）。
+#
+# 「中国」「中华」是**国家的名字**，不是行政区划，因此不能放进 regions.txt：
+# 放进去会让「中国建筑」被当成「以行政区划开头的简称」，
+# same_entity("中国建筑", "中国建筑科技") 就变成 True——那是两家公司。
+#
+# 但国家前缀与行政区划前缀在**区分标志**这件事上作用相同：
+# 「中国联合网络通信集团有限公司」与「联合网络通信有限公司」是
+# 集团公司与子公司，两家不同的公司，不能并成一家。
+#
+# 与行政区划前缀一样，在两处检查：
+#   1. _extra_head_is_clean：多出来的那部分是国家前缀 → 不是同一主体；
+#   2. _connector_cut_allowed：连接词前面那段是国家前缀 → 连接词是字号的一部分。
+# 两处都用同一张表，避免「这里当区分标志、那里当句子碎片」的分叉。
+_COUNTRY_PREFIXES = ("中国", "中华")
+
 # 按首字索引：_starts_with_region 要被调用很多次，逐个比对两百多个地名
 # 太慢，先按首字分桶。
 _REGIONS_BY_FIRST: dict[str, list[str]] = {}
@@ -171,6 +187,14 @@ def _starts_with_region(text: str) -> bool:
     return False
 
 
+def _starts_with_country(text: str) -> bool:
+    """是否以国家前缀开头（「中国」「中华」）。
+
+    国家前缀不是行政区划，因此单列一张表（见 _COUNTRY_PREFIXES）。
+    """
+    return text.startswith(_COUNTRY_PREFIXES)
+
+
 def _connector_cut_allowed(prefix: str, idx: int, sentence_level: bool,
                            candidate: str) -> bool:
     """这一处连接词是不是「两个主体之间的分隔符」。
@@ -183,6 +207,9 @@ def _connector_cut_allowed(prefix: str, idx: int, sentence_level: bool,
       不是字号的一部分（「本文件由华为技术有限公司」）。
       字号至少两个字，因此连接词前面只有一个字时，那个字与连接词同属字号
       （「自由贸易港城」里的「由」）。
+      连接词前面那段以**行政区划**或**国家前缀**开头时同样不裁：
+      「海南自由贸易港城」与「中国自由贸易港城」都是完整的字号，
+      里面的连接词是字号的一部分。
     - 其余情况：连接词是字号的一部分，保留（「和而泰」「中国联合」）。
 
     候选部分太短说明连接词本身就是字号的一部分（「华为技术」中的「为」）。
@@ -197,6 +224,10 @@ def _connector_cut_allowed(prefix: str, idx: int, sentence_level: bool,
     if not head:
         return True
     if _starts_with_region(head):
+        return False
+    if _starts_with_country(head):
+        # 国家前缀与行政区划前缀一样是区分标志：
+        # 「中国自由贸易港城」里的「由」是字号的一部分，不能裁掉。
         return False
     return len(head) >= 2
 
@@ -463,7 +494,8 @@ def core_key(name: str) -> str:
     """核心字号：去掉公司词尾（可叠层）与行政区划前缀后的剩余部分。
 
     **流水线不用这个口径**：归组基准是 `canonical_core`，它保留行政区划
-    （北京与上海同名不是同一家）。本函数只作展示用途——
+    （北京与上海同名不是同一家）。本函数**只为测试保留**——
+    流水线里没有任何地方调用它，报告里也不出现它。
     「展示用核心字号」曾经被当成归组基准，会把两家同名公司并成一家。
 
     刻意不剥离行业词。行业词参与主体区分：
@@ -542,8 +574,16 @@ def _extra_head_is_clean(longer: str, shorter: str) -> bool:
     「华为技术有限公司」与「上海华为技术有限公司」是两家不同的公司，
     行政区划是区分标志，不是语气词。把它们归并会凭空造出一条
     「统一为正式全称」的确定级建议，让用户去统一两家公司的名字。
+
+    多出来的部分**以国家前缀开头**时同样不能算同一主体：
+    「中国联合网络通信集团有限公司」与「联合网络通信有限公司」
+    是集团公司与子公司，两家不同的公司。国家前缀与行政区划前缀
+    在这件事上作用相同，因此同样归入「区分标志」。
     """
     head = longer[: len(longer) - len(shorter)]
+    if _starts_with_country(head):
+        # 国家前缀与行政区划前缀一样是区分标志
+        return False
     if any(w in head for w in _NAME_CONNECTORS):
         return False
     if _starts_with_region(head):
@@ -602,7 +642,9 @@ def same_entity(a: str, b: str) -> bool:
       带连接词前缀的同一写法与干净写法
       （「由北京华信科技」）。多出来的若是「联合」「和」这类字号常用字
       （「联合网络通信」之于「网络通信」），或是一段行政区划
-      （「上海华为技术有限公司」之于「华为技术有限公司」），则不是同一主体
+      （「上海华为技术有限公司」之于「华为技术有限公司」），
+      或是一段国家前缀（「中国联合网络通信集团」之于「联合网络通信」），
+      则不是同一主体
     - 互为**前缀**且较短一方是**裸字号**：不超过 3 个字，或以行政区划开头，
       且不以行业词结尾（否则是经营范围不同，不是简称）
 
