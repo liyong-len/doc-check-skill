@@ -134,9 +134,11 @@ def test_the_colliding_stems_with_different_forms_report_a_p0_and_no_p1():
 def test_the_same_company_with_different_sentence_prefixes_is_not_split():
     """同一家公司换个句子前缀，不得被拆成两个主体。
 
-    还原名是「同一个前缀有不止一个合格切分」时更宽的那一个。
-    句子前缀不同但字号一样时，还原名必须一样——否则每份文档都会
-    平白多出一条「疑似混主体」。
+    还原名是「同一个前缀有不止一个合格切分」时**更宽的那一个**，按两条
+    规则挑出来（见 `references/format-rules.md`「主体名称」一节）：条款 (a)
+    是切在**同一个连接词**上的那一段，条款 (b) 是被裁掉的那一段**整个
+    是一个完整角色词**的那一段。句子前缀不同但字号一样时，还原名必须
+    一样——否则每份文档都会平白多出一条「疑似混主体」。
     """
     docs = [_doc("a.docx", [
         "本文件由北京华信科技有限公司编制。",

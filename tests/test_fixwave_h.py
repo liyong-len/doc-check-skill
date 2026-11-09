@@ -2,8 +2,9 @@
 
 覆盖：
 - C-1 还原名把句子碎片还原成了公司名（`方是北京华信科技有限公司`、
-      `要求由北京华信科技有限公司`）：还原名只认**切在同一个连接词上**
-      的那个更宽候选。
+      `要求由北京华信科技有限公司`）：还原名的条款 (a) 只认**切在同一个
+      连接词上**的那个更宽候选，条款 (b) 只认被裁掉的那一段**整个是一个
+      完整角色词**的候选，且有四道守卫（修复波 I 补上条款 (b)）。
 - C-2 还原名仍会把两家不同的公司并成一家
       （`北方自由贸易港城有限公司` 与 `贸易港城有限公司`）：
       多出来的那部分是一段专有名词时不合并，只报疑似级的 P0。
@@ -89,19 +90,17 @@ PROSE_CASES = [
 # --- C-1：还原名不得把句子碎片还原成公司名 ---
 
 
-def test_the_extractor_never_publishes_a_sentence_fragment_as_a_name():
-    """四种写法里，抽出来的名字必须就是那家公司。
+def test_the_trimmed_name_is_never_a_sentence_fragment():
+    """抽出来的**裁剪后**的名字必须就是那家公司。
 
-    修复前：
-    - `受托方是北京华信科技有限公司` 还原出 `方是北京华信科技有限公司`
-    - `根据采购方要求由北京华信科技有限公司负责实施` 还原出
-      `要求由北京华信科技有限公司`
-
-    还原名是**同一个前缀有不止一个合格切分**时更宽的那一个。两个字号的
-    两个切点落在同一个连接词上（`本项目由中国自由贸易港城` 的两个「由」），
-    才说明更宽的那一段是同一个字号的更宽视角；切点落在**不同**的连接词上
-    （`受托方是北京华信科技` 的「受托」与「是」），更宽的那一段是另一段
-    句子碎片，还原它就凭空造出了一个并不存在的公司。
+    这一条查的是 `extract_company_names` 的返回值——**裁剪之后**的那
+    一段，不是还原名。还原名由同文件里的
+    `test_the_restored_name_of_a_polluted_prefix_is_not_published` 查：
+    缺陷出在还原名那一侧（`受托方是北京华信科技有限公司` 还原出
+    `方是北京华信科技有限公司`、`根据采购方要求由北京华信科技有限公司
+    负责实施` 还原出 `要求由北京华信科技有限公司`），裁剪后的名字那一侧
+    从来没坏过，因此这两处必须分开查，不能拿裁剪后的名字冒充还原名的
+    证据。
     """
     assert extract_company_names("本文件由北京华信科技有限公司编制。") == [
         "北京华信科技有限公司"
@@ -379,7 +378,11 @@ def test_the_powershell_installer_restores_the_cache_dir_in_the_script():
 
 
 def test_the_rules_describe_the_same_connector_selection_rule():
-    """文档要写清楚还原名的选择规则是「更宽**且切在同一个连接词上**」。"""
+    """文档要写清楚还原名的**条款 (a)** 是「更宽**且切在同一个连接词上**」。
+
+    修复波 I 之后还原名有两条规则，条款 (a) 是其中一条；条款 (b)
+    （被裁掉的那一段整个是一个完整角色词）由 fixwave I 的测试查。
+    """
     text = _format_rules()
     assert "切在同一个连接词上" in text
     # 旧的说法（「更宽的那一段」）单独出现时会误导人
@@ -398,7 +401,7 @@ def test_the_rules_do_not_claim_the_restored_name_is_always_a_company_name():
     assert "还原名是文档里逐字存在的字符串，不等于它是一个公司名" in text
     assert "确定级的 P1「主体名称」" in text
     # 旧的说法：把「不会报出确定级建议」当成还原名的一般性质
-    assert "也**不会**报出确定级的「统一名称写法」建议" not in text
+    assert "也**不会**报出确定级的 P1「主体名称」建议" not in text
 
 
 def test_the_known_limitations_record_the_residual_pollution():
@@ -412,7 +415,7 @@ def test_the_known_limitations_record_the_residual_pollution():
 def test_the_known_limitations_state_the_registry_distinct_enterprise_forms():
     """有限公司与有限责任公司在登记实践上是不同的企业形式。
 
-    确定级的「统一名称写法」建议对这类情况可能是错的：那是两家
+    确定级的 P1「主体名称」建议对这类情况可能是错的：那是两家
     分别注册的独立公司，只能由人工核对企业登记信息。
     """
     body = _known_limitations()
