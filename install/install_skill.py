@@ -136,14 +136,39 @@ def leftover_dirs(root: Path) -> list[Path]:
     return out
 
 
-def print_status(adapters: dict, root: Path, repo_root: Path) -> int:
+def _install_note(redirected: bool, dry_run: bool, status: bool) -> str:
+    """安装提示语：说清楚这一次会不会写真实家目录。
+
+    只读的那两种模式（试运行、状态查询）不写任何文件，
+    说「将写入真实家目录」是假的——它们说的是**正式安装**会写。
+    """
+    if redirected:
+        return ("（由 --target-root / DOC_CHECK_TARGET_ROOT 指定，"
+                "不会写入真实家目录）")
+    if dry_run:
+        return ("（未指定 --target-root / DOC_CHECK_TARGET_ROOT；"
+                "正式安装会写入真实家目录，本次试运行不写入任何文件）")
+    if status:
+        return ("（未指定 --target-root / DOC_CHECK_TARGET_ROOT；"
+                "正式安装会写入真实家目录，本次状态查询只读，不写入任何文件）")
+    return ("（未指定 --target-root / DOC_CHECK_TARGET_ROOT，"
+            "将写入真实家目录）")
+
+
+def print_status(adapters: dict, root: Path, repo_root: Path,
+                 note: str = "") -> int:
     """打印安装状态：家目录根、各适配项的目标路径、残留情况。
 
     输出的最后一行是机器可读的结论（干净 / 残留 N 处），
     一条命令就能判断机器上到底有没有残留，不必靠人回忆。
+
+    note 是跟在根目录后面的一句话（说明这一次会不会写真实家目录）。
+    它排在根目录**之后**：先把解析出来的根目录摆出来，再说话。
     """
     print("== doc-check 安装状态 ==")
     print(f"根目录（~ 展开到）：{root}")
+    if note:
+        print(f"  {note}")
     print(f"仓库目录：{repo_root}")
     print("")
     print("已知智能体目录：")
@@ -326,27 +351,16 @@ def main(argv=None) -> int:
         (repo_root / "install" / "adapters.json").read_text(encoding="utf-8")
     )
 
+    if args.status:
+        # 状态查询只读：先把**解析出来的根目录**印出来，
+        # 「本次只读」那句话跟在根目录后面——话要跟在事实后面。
+        return print_status(adapters, root, repo_root,
+                            note=_install_note(redirected, False, True))
+
     print("== doc-check 智能体安装阶段 ==")
     print(f"根目录（~ 展开到）：{root}")
-    if redirected:
-        print("  （由 --target-root / DOC_CHECK_TARGET_ROOT 指定，"
-              "不会写入真实家目录）")
-    elif args.dry_run:
-        # 试运行不写任何文件，说「将写入真实家目录」是假的。
-        print("  （未指定 --target-root / DOC_CHECK_TARGET_ROOT；"
-              "正式安装会写入真实家目录，本次试运行不写入任何文件）")
-    elif args.status:
-        # 状态查询只读，同样不写任何文件。
-        print("  （未指定 --target-root / DOC_CHECK_TARGET_ROOT；"
-              "正式安装会写入真实家目录，本次状态查询只读，不写入任何文件）")
-    else:
-        print("  （未指定 --target-root / DOC_CHECK_TARGET_ROOT，"
-              "将写入真实家目录）")
+    print(f"  {_install_note(redirected, args.dry_run, False)}")
     print(f"仓库目录：{repo_root}")
-
-    if args.status:
-        print("")
-        return print_status(adapters, root, repo_root)
 
     rows = skill_targets(adapters, root)
     to_install = [(agent, target) for agent, target in rows if detect(agent, root)]

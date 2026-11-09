@@ -23,6 +23,18 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $InstallDir = Join-Path $RepoRoot "install"
 $VenvDir = Join-Path $RepoRoot ".venv"
 
+# 把 pip 的缓存目录钉在虚拟环境里。
+#
+# 与 install.sh 同一件事、同一位置（spec §11.1「安装流程」：两个安装器
+# 走的是同一套流程，行为必须一致）。
+# pip 用 platformdirs 算缓存目录；有的平台与版本组合下，算出来的路径会
+# 退化成**当前工作目录**下的相对路径，缓存就落在用户执行安装命令的
+# 那个目录里——安装器不该往用户的目录里扔东西。触发条件依平台而异，
+# 这里不写死是哪一种机制，只是把缓存目录钉死。
+#
+# 必须在**建虚拟环境之前**设好：venv 自带的 ensurepip 也会用 pip 的缓存。
+$env:PIP_CACHE_DIR = Join-Path $VenvDir ".pip-cache"
+
 function Write-ErrLine([string]$Message) {
     [Console]::Error.WriteLine($Message)
 }
