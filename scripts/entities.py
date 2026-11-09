@@ -131,6 +131,36 @@ _CONNECTORS = [
 # 「多出来的部分」里出现这些字，说明多出来的是字号的一部分而不是句子碎片。
 _NAME_CONNECTORS = [w for w, s in _CONNECTORS if not s]
 
+# 完整的句子级连接词：还原名的条款 (b) 用。
+#
+# 与 _CONNECTORS 的分工，两张表问的问题不一样：
+#
+#   - _CONNECTORS 问「这一处连接词是不是两个主体之间的分隔符」，
+#     判据是**位置**（后面跟不跟行政区划、前面那截有多长）；
+#   - 这张表问「被裁掉的那一段**整个**是不是一个角色词」，
+#     判据是**这个词本身**。
+#
+# 因此这张表窄得多：只收「整个词都是角色词」的写法。
+#
+# 「受托」也收着——它单独出现时是完整的角色词（`受托北京华信科技`），
+# 但裁剪点把它劈成两半时（`受托方是北京华信科技`）那一刀切在词中间，
+# 不是词边界，由碎片检查挡下来（见 _splits_a_connector_word）。
+_COMPLETE_SENTENCE_CONNECTORS = (
+    # 合同双方
+    "甲方", "乙方", "丙方", "丁方", "双方", "各方", "我方", "贵方", "贵司",
+    # 招投标角色
+    "中标人", "中标单位", "中标方", "投标人", "投标单位", "招标人",
+    "招标代理", "招标代理方", "采购人", "采购方", "采购单位",
+    "供货商", "供货单位", "供应商", "承包人", "承包商", "承包单位",
+    "承接方", "承接单位", "实施单位", "实施方", "承担单位", "承办单位",
+    "施工单位", "受托方", "受托人", "受托", "委托方", "委托人", "委托",
+    "卖方", "买方", "需方", "供方", "由",
+)
+
+# 系词：角色词与字号之间的连接（「中标人为…」「实施单位是…」）。
+# 它们是句子的成分，不属于字号的一部分。
+_COPULAS = ("是", "为")
+
 # 裁剪后至少要剩下的字号长度。太短说明连接词本身是字号的一部分
 # （「华为技术」中的「为」），此时不裁剪。
 _MIN_PREFIX_LEN = 4
@@ -311,8 +341,11 @@ _SENTENCE_CONNECTORS = tuple(w for w, level in _CONNECTORS if level)
 # 只有「由」这一个连接词，它既不以连接词开头，也不含表里其余的
 # 十七个标记，于是被当成「不是句子碎片」而发布成公司名。
 # 治它靠的不是把「由」加回这张表（那会把「中国自由贸易港城」
-# 这样的真字号当成碎片），而是**还原名只认切在同一个连接词上的
-# 那个更宽候选**（见 _trim_prefix_details）。
+# 这样的真字号当成碎片），而是**还原名另有两条规则**（见
+# _trim_prefix_details）：条款 (a) 只认切在同一个连接词上的那个更宽
+# 候选，条款 (b) 只认被裁掉的那一段整个是一个完整角色词的候选，
+# 并且有四道守卫（其中一道是「那一刀没有把一个更长的角色词劈成
+# 两半」，`受托方是…` 就是靠它挡住 `方是北京华信科技` 的）。
 _JUNK_MARKERS = tuple(w for w in _SENTENCE_CONNECTORS if w != "由")
 
 
@@ -327,16 +360,18 @@ def _is_junk_candidate(text: str) -> bool:
     return any(w in text for w in _JUNK_MARKERS)
 
 
-def _cut_candidates(prefix: str) -> list[tuple[str, str]]:
+def _cut_candidates(prefix: str) -> list[tuple[str, str, int]]:
     """连接词裁剪时**所有**合格的切分，按发现顺序。
 
-    每条是 (切分之后剩下的候选, 切这一刀用的连接词)。
+    每条是 (切分之后剩下的候选, 切这一刀用的连接词, 连接词在 prefix
+    里的下标)。
 
     _trim_prefix 只取其中最短的一个；这里把全部候选留下来，是为了判断
-    **裁剪点是不是落在字号内部**（见 _trim_prefix_details）。连接词一并
-    记下来，是因为还原名只认**切在同一个连接词上**的那一个候选。
+    **裁剪点是不是落在字号内部**（见 _trim_prefix_details）。连接词与
+    下标一并记下来，是因为还原名既要看「切在同一个连接词上」，也要看
+    「角色词与误切点之间剩下的是不是字号的一部分」。
     """
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, int]] = []
     for word, sentence_level in _CONNECTORS:
         start = 0
         while True:
@@ -345,8 +380,83 @@ def _cut_candidates(prefix: str) -> list[tuple[str, str]]:
                 break
             candidate = prefix[idx + len(word):].strip()
             if _connector_cut_allowed(prefix, idx, sentence_level, candidate):
-                out.append((candidate, word))
+                out.append((candidate, word, idx))
             start = idx + 1
+    return out
+
+
+def _splits_a_connector_word(word: str, rest: str) -> bool:
+    """这一刀是不是把一个更长的连接词劈成了两半。
+
+    `受托方是北京华信科技` 在「受托」处切开，剩下「方是北京华信科技」
+    ——「受托方」被劈开了。那一刀切在词中间，不是词边界，剩下的是
+    另一段句子碎片，不是同一个字号的更宽视角。
+    """
+    for longer in _COMPLETE_SENTENCE_CONNECTORS:
+        if len(longer) > len(word) and longer.startswith(word):
+            if rest.startswith(longer[len(word):]):
+                return True
+    return False
+
+
+def _is_wordmark_head(head: str) -> bool:
+    """这一段是不是字号本身的开头（行政区划或国家前缀开头）。
+
+    角色词与误切点之间应当只剩下字号的开头。中间若夹着句子的成分
+    （`认可后`、`指定的实施单位为`），说明这一刀切早了，还原出来的是
+    一段句子而不是字号。
+    """
+    if not head:
+        return False
+    return _starts_with_region(head) or _starts_with_country(head)
+
+
+def _connector_word_candidates(prefix: str, kept: str,
+                                kept_at: int) -> list[str]:
+    """还原名的条款 (b)：被裁掉的那一段**整个**是一个角色词。
+
+    条款 (a)（切在同一个连接词上）是一个正确但很窄的特例：散文里的
+    分隔词与字号内部的连接词**不是同一个词**时，那条特例不适用，
+    真字号就被劈掉一半（`中标人为北京自由空间科技` 里的「由」是
+    「自由」的一半，于是字号被劈成「空间科技」）。
+
+    条款 (b) 认的是另一件事：**被裁掉的那一段是不是一个完整的角色词**。
+    `中标人为北京自由空间科技` 的前缀整段是「中标人」——一个完整的
+    角色词，说明裁剪点落在一个词边界上，剩下的是真字号。
+
+    四道守卫，缺一不可：
+
+    1. 前缀**以**角色词开头（多一个字都不行：`根据采购方` 带了填充
+       词「根据」，不是角色词）；
+    2. 那一刀没有把一个更长的角色词劈成两半（`受托` + `方…`）；
+    3. 角色词与误切点之间只剩字号的开头——行政区划或国家前缀
+       （`乙方认可后由北京华信科技` 的中间是「认可后」，是句子成分，
+       说明这一刀切早了，还原出来的是一段句子）；
+    4. 候选不是句子碎片，且比采用的切分更长。
+
+    角色词后面可以跟一个系词（「中标人为」「实施单位是」），系词是
+    句子成分，不属于字号。
+    """
+    out: list[str] = []
+    for word in _COMPLETE_SENTENCE_CONNECTORS:
+        if not prefix.startswith(word):
+            continue
+        cut_end = len(word)
+        if _splits_a_connector_word(word, prefix[cut_end:]):
+            continue
+        start = cut_end
+        if start < len(prefix) and prefix[start] in _COPULAS:
+            start += 1
+        if start >= kept_at:
+            continue
+        candidate = prefix[start:]
+        if len(candidate) <= len(kept):
+            continue
+        if not _is_wordmark_head(prefix[start:kept_at]):
+            continue
+        if _is_junk_candidate(candidate):
+            continue
+        out.append(candidate)
     return out
 
 
@@ -361,18 +471,26 @@ def _trim_prefix_details(prefix: str) -> tuple[str, str]:
     「贸易港城」——裁剪取最短的那个，于是字号被劈掉一半。另一个切分
     才是完整的字号。
 
-    **还原名只认切在同一个连接词上的那个更宽候选。**
-    这一条是修复波 H 的 C-1：「受托方是北京华信科技」有两个合格切分，
-    一个切在「受托」上（剩下「方是北京华信科技」），一个切在「是」上
-    （剩下「北京华信科技」）。最短的那个是「北京华信科技」，而更宽的
-    那个「方是北京华信科技」切在**另一个**连接词上——它是另一段
-    句子碎片，不是同一个字号的更宽视角，把它还原成公司名就会发布出
-    「方是北京华信科技有限公司」这种并不存在的公司。
+    **还原名有两条路**：
 
-    真正的还原长这样：「本项目由中国自由贸易港城」的两个切分**都切在
-    「由」上**（「中国自由贸易港城」与「贸易港城」）——同一个连接词
-    出现两次，说明第二个「由」是「自由」的一半，两处切的是同一个
-    字号。这种情况才还原。
+    (a) 更宽的候选切在**同一个连接词**上。
+        「本项目由中国自由贸易港城」的两个切分都切在「由」上——同一个
+        连接词出现两次，说明第二个「由」是「自由」的一半，两处切的是
+        同一个字号。这种情况才还原。
+
+    (b) 更宽的候选被裁掉的那一段**整个**是一个完整的角色词
+        （见 _connector_word_candidates）。
+        这一条补上条款 (a) 的空档：散文里的分隔词与字号内部的连接词
+        **不是同一个词**时——`中标人为北京自由空间科技` 里的分隔词是
+        「中标人」，字号内部的连接词是「自由」里的「由」——条款 (a)
+        不适用，真字号被劈成「空间科技」。条款 (b) 认的是「被裁掉的
+        那一段是不是一个完整的角色词」，与两个连接词是不是同一个
+        词无关。
+
+    条款 (b) 与修复波 H 的 C-1 并不冲突：`受托方是北京华信科技` 的
+    前缀整段是「受托方」——一个完整的角色词——但那一刀切在「受托方」
+    的中间，剩下的是「方是北京华信科技」，那是另一段句子碎片。
+    碎片检查（_splits_a_connector_word）把它挡下来。
 
     只认**不以连接词开头**的候选：「甲方及乙方共同委托北京华信科技」
     这种句子碎片不是字号，不能拿来还原。没有这样的候选时，第二个
@@ -382,14 +500,17 @@ def _trim_prefix_details(prefix: str) -> tuple[str, str]:
     if not cands:
         kept = prefix.strip()
         return kept, kept
-    kept, kept_word = cands[0]
-    for c, word in cands[1:]:
+    kept, kept_word, kept_at = cands[0]
+    for c, word, at in cands[1:]:
         if len(c) < len(kept):
-            kept, kept_word = c, word
-    wider = [c for c, word in cands
+            kept, kept_word, kept_at = c, word, at
+    wider = [c for c, word, _at in cands
              if word == kept_word
              and len(c) > len(kept)
              and not _is_junk_candidate(c)]
+    for c in _connector_word_candidates(prefix, kept, kept_at):
+        if c not in wider:
+            wider.append(c)
     if not wider:
         return kept, kept
     return kept, max(wider, key=len)
@@ -572,11 +693,15 @@ def extract_company_occurrences(text: str) -> list[tuple[str, str]]:
     拿这两个值当公司名去展示、去归组之前，先想一遍它像不像一个字号。
 
     「本项目由中国自由贸易港城有限公司」裁出来的是「贸易港城有限公司」，
-    还原名是「中国自由贸易港城有限公司」；「中国自由贸易港城有限公司」
-    （裸字符串）只有一个合格切分，还原不出来，还原名与裁剪后的名字相同。
+    还原名是「中国自由贸易港城有限公司」；「中标人为北京自由空间科技
+    有限公司」裁出来的是「空间科技有限公司」，还原名是「北京自由空间
+    科技有限公司」；「中国自由贸易港城有限公司」（裸字符串）只有一个合格
+    切分，还原不出来，还原名与裁剪后的名字相同。
 
     聚类与报告用的是**还原名**：两家不同的公司被裁成同一个名字时
-    （「贸易港城有限公司」），只有还原名才分得开是谁是谁。
+    （「贸易港城有限公司」），只有还原名才分得开是谁是谁。还原名有两条
+    规则，见 _trim_prefix_details。**还原不出来时它们仍会被并成一家**，
+    那一类的边界写在 references/format-rules.md 的「已知局限」一节里。
 
     扫描是「跳到延伸后的末尾再继续」，不是 finditer 的逐个匹配：
     名字延伸过去的那截文字若被重新匹配一次，就会凭空多出半个公司名
@@ -803,7 +928,7 @@ def _extra_head_is_clean(longer: str, shorter: str,
     「北方自由贸易港城有限公司」与「贸易港城有限公司」就是这么来的
     ——后者是前者的字号被裁掉一半之后剩下的残缺名，可它同时也是
     另一家公司（「中国自由贸易港城有限公司」）裁出来的残缺名。
-    把它们并成一家，报出的是确定级的「统一名称写法」建议，
+    把它们并成一家，报出的是确定级的 P1「主体名称」建议，
     让用户去统一两家不同的公司——这是确定级的假阳性。
     不并，只报疑似级的「主体串写」，是这里唯一安全的做法。
     """
@@ -890,7 +1015,7 @@ def same_entity(a: str, b: str) -> bool:
     两段专有名词差一截时，文档里没有依据说它们是同一家公司——
     「北方自由贸易港城有限公司」与「贸易港城有限公司」就是这么来的，
     后者同时也是另一家公司裁出来的残缺名。合成一家，报出的就是
-    确定级的「统一名称写法」建议：让用户去统一两家不同的公司。
+    确定级的 P1「主体名称」建议：让用户去统一两家不同的公司。
 
     裸字号在文档里指向哪一家要看上下文，这个判定在 group_variants 里做；
     这里只回答「有没有可能是同一家」。
