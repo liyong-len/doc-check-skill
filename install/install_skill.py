@@ -331,6 +331,14 @@ def main(argv=None) -> int:
     if redirected:
         print("  （由 --target-root / DOC_CHECK_TARGET_ROOT 指定，"
               "不会写入真实家目录）")
+    elif args.dry_run:
+        # 试运行不写任何文件，说「将写入真实家目录」是假的。
+        print("  （未指定 --target-root / DOC_CHECK_TARGET_ROOT；"
+              "正式安装会写入真实家目录，本次试运行不写入任何文件）")
+    elif args.status:
+        # 状态查询只读，同样不写任何文件。
+        print("  （未指定 --target-root / DOC_CHECK_TARGET_ROOT；"
+              "正式安装会写入真实家目录，本次状态查询只读，不写入任何文件）")
     else:
         print("  （未指定 --target-root / DOC_CHECK_TARGET_ROOT，"
               "将写入真实家目录）")
