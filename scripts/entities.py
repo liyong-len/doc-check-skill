@@ -65,8 +65,7 @@ _COUNTRY_PREFIXES = ("中国", "中华")
 
 # 国家前缀那一段什么时候算「完整的字号」（wordmark）。
 #
-# 「中国联通集团」是一个完整的字号：它以国家前缀开头，又以企业形式词结尾。
-# 这时候句子级连接词是字号的一部分，不能裁。
+# 头部长这样时，句子级连接词是字号的一部分，不能裁。
 #
 # 「中国联通本次项目」**不是**完整字号——「本次项目」是一个开放从句。
 # 只要头部以国家前缀开头就一律不裁，会把从句连同它后面那家公司一起吞进来：
@@ -81,10 +80,22 @@ _COUNTRY_PREFIXES = ("中国", "中华")
 # **不是**完整字号，拿它挡住裁剪会发布一个并不存在的公司名
 # （「中国石油有限由华为技术有限公司」），那正是这一波要治的病。
 #
-# 补一句实话：前缀部分止于**第一个形式词之前**，所以头部（连接词前面
-# 那一段）里通常不出现完整的形式词，这条守卫在真实文本里极少触发。
-# 留着它是为了口径完整：头部确实是一个完整字号时（形式词被拆在括号里
-# 的写法），连接词就是字号的一部分。
+# 补一句实话——这条守卫的实际覆盖面比看上去小得多：
+#
+#   头部是 prefix[:idx]，即**连接词前面那一段**；而正则的 pre 组
+#   非贪婪，止于**第一个形式词之前**。因此普通散文里的头部里
+#   根本不出现完整的形式词，「中国联通集团」这种写法**到不了**
+#   这个分支（pre 组是「中国联通」，形式词「集团」在 pre 组之外）。
+#   穷举过各种构造与随机串，这条分支只在**头部带括号**时才会触发：
+#   形式词被拆进括号里（`中国(集团由华为技术)有限公司`），头部就成了
+#   「中国(集团」——它以形式词结尾，守卫因此生效，连接词不被裁掉。
+#
+#   所以这条分支的实际作用是**保护带括号的头部**，不是识别完整字号。
+#   去掉它，`中国(集团由华为技术)有限公司` 会被裁成
+#   `华为技术)有限公司`——一个括号都不配平的错名字。留着它。
+#
+# 结论：这条守卫**不会**在普通字号散文上生效，以国家前缀开头的开放从句
+# 一律照裁。
 _COUNTRY_WORDMARK_TAILS = tuple(_SUFFIXES)
 
 # 按首字索引：_starts_with_region 要被调用很多次，逐个比对两百多个地名
@@ -226,6 +237,11 @@ def _is_country_wordmark(head: str) -> bool:
     「中国联通集团」是完整字号；「中国联通本次项目」不是——后面是一个
     开放从句。以国家前缀开头就一律当字号，会把从句连同它后面那家公司
     一起吞进名字里（见 _connector_cut_allowed）。
+
+    头部长什么样见 _COUNTRY_WORDMARK_TAILS 上面的说明：它止于第一个形式词
+    之前，因此普通散文里的头部里没有完整的形式词，这条判定实际只在
+    **形式词被拆进括号里**的写法上生效（如 `中国(集团`）。它是括号保护，
+    不是「完整字号」的识别。
     """
     return head.endswith(_COUNTRY_WORDMARK_TAILS)
 
@@ -271,14 +287,43 @@ def _connector_cut_allowed(prefix: str, idx: int, sentence_level: bool,
     return len(head) >= 2
 
 
-def _trim_prefix(prefix: str) -> str:
-    """切掉前缀中的连接词，取最短的合格切分作为字号主体。
+def _starts_with_connector(text: str) -> bool:
+    """这段文字是不是以连接词开头。
 
-    枚举每个连接词的出现位置，切掉它及其之前的部分，在合格的候选中取最短的
-    一个——也就是最靠后的那个连接词。连接词是不是分隔符由
-    _connector_cut_allowed 判断（抽取与规范核心字号同一套规则）。
+    连接词是句子碎片（「甲方」「委托」「及」），不是字号的一部分。
+    用来把句子碎片从「更宽的候选」里剔出去。
     """
-    best = None
+    return any(text.startswith(w) for w, _level in _CONNECTORS)
+
+
+# 句子级连接词里「由」是个例外：它常出现在词的中间（自由、由于、理由），
+# 不能因为候选里有「由」就断定那一段是句子碎片。
+#
+# 其余的句子级连接词（甲方、乙方、委托、采购方…）出现在候选里，
+# 就说明候选前面还有没裁干净的句子碎片。
+_JUNK_MARKERS = tuple(
+    w for w, level in _CONNECTORS if level and w != "由"
+)
+
+
+def _is_junk_candidate(text: str) -> bool:
+    """这段候选是不是还带着句子碎片。
+
+    「共同委托北京华信科技」不是字号——「共同委托」是句子的成分。
+    「中国自由贸易港城」是字号——里面的「由」是「自由」的一半。
+    """
+    if _starts_with_connector(text):
+        return True
+    return any(w in text for w in _JUNK_MARKERS)
+
+
+def _cut_candidates(prefix: str) -> list[str]:
+    """连接词裁剪时**所有**合格的切分，按发现顺序。
+
+    _trim_prefix 只取其中最短的一个；这里把全部候选留下来，是为了判断
+    **裁剪点是不是落在字号内部**（见 _trim_prefix_details）。
+    """
+    out: list[str] = []
     for word, sentence_level in _CONNECTORS:
         start = 0
         while True:
@@ -287,12 +332,49 @@ def _trim_prefix(prefix: str) -> str:
                 break
             candidate = prefix[idx + len(word):].strip()
             if _connector_cut_allowed(prefix, idx, sentence_level, candidate):
-                if best is None or len(candidate) < len(best):
-                    best = candidate
+                out.append(candidate)
             start = idx + 1
-    if best is None:
-        return prefix.strip()
-    return best
+    return out
+
+
+def _trim_prefix_details(prefix: str) -> tuple[str, str]:
+    """返回 (采用的字号前缀, 更宽的候选)。
+
+    采用的仍然是**最短**的合格切分——这条口径一个字没动。
+    第二个返回值是「裁剪点落在字号内部」时更接近真字号的那一个切分。
+
+    为什么会落在字号内部：「本项目由中国自由贸易港城」里有两个「由」，
+    第二个是「自由」的一半。合格的切分有两个——「中国自由贸易港城」与
+    「贸易港城」——裁剪取最短的那个，于是字号被劈掉一半。另一个切分
+    才是完整的字号。
+
+    只认**不以连接词开头**的候选：「甲方及乙方共同委托北京华信科技」
+    这种句子碎片不是字号，不能拿来还原。没有这样的候选时，第二个
+    返回值与第一个相同（没有可还原的余地）。
+    """
+    cands = _cut_candidates(prefix)
+    if not cands:
+        kept = prefix.strip()
+        return kept, kept
+    kept = cands[0]
+    for c in cands[1:]:
+        if len(c) < len(kept):
+            kept = c
+    wider = [c for c in cands
+             if len(c) > len(kept) and not _is_junk_candidate(c)]
+    if not wider:
+        return kept, kept
+    return kept, max(wider, key=len)
+
+
+def _trim_prefix(prefix: str) -> str:
+    """切掉前缀中的连接词，取最短的合格切分作为字号主体。
+
+    枚举每个连接词的出现位置，切掉它及其之前的部分，在合格的候选中取最短的
+    一个——也就是最靠后的那个连接词。连接词是不是分隔符由
+    _connector_cut_allowed 判断（抽取与规范核心字号同一套规则）。
+    """
+    return _trim_prefix_details(prefix)[0]
 
 
 def _segment_end(text: str, start: int) -> int:
@@ -449,8 +531,19 @@ def _generic_fragment(name: str) -> bool:
     return True
 
 
-def extract_company_names(text: str) -> list[str]:
-    """抽取公司类名称，按出现顺序去重。
+def extract_company_occurrences(text: str) -> list[tuple[str, str]]:
+    """抽出 (裁剪后的名字, 还原名) 对，按出现顺序去重。
+
+    裁剪后的名字是连接词裁剪留下来的那一段；还原名是**裁剪点落在字号
+    内部**时更接近真字号的那一段（见 _trim_prefix_details）。两者都是
+    文档里逐字存在的字符串。
+
+    「本项目由中国自由贸易港城有限公司」裁出来的是「贸易港城有限公司」，
+    还原名是「中国自由贸易港城有限公司」；「中国自由贸易港城有限公司」
+    （裸字符串）只有一个合格切分，还原不出来，还原名与裁剪后的名字相同。
+
+    聚类与报告用的是**还原名**：两家不同的公司被裁成同一个名字时
+    （「贸易港城有限公司」），只有还原名才分得开是谁是谁。
 
     扫描是「跳到延伸后的末尾再继续」，不是 finditer 的逐个匹配：
     名字延伸过去的那截文字若被重新匹配一次，就会凭空多出半个公司名
@@ -461,8 +554,8 @@ def extract_company_names(text: str) -> list[str]:
     下一个名字从连接词之后开始——「北京华信科技有限公司和华为技术有限公司」
     是两个公司，不能并成一个。
     """
-    out: list[str] = []
-    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     text = text or ""
     pos = 0
     n = len(text)
@@ -475,21 +568,48 @@ def extract_company_names(text: str) -> list[str]:
         pos = max(end, m.end())
         if resume is not None:
             pos = max(pos, resume)
-        prefix = _trim_prefix(m.group("pre"))
-        if not prefix:
+        kept, wider = _trim_prefix_details(m.group("pre"))
+        if not kept:
             continue
-        if _is_form_fragment(prefix) or prefix in _NON_NAME_WORDS:
+        if _is_form_fragment(kept) or kept in _NON_NAME_WORDS:
             continue
-        if not _CJK_RE.search(prefix):
+        if not _CJK_RE.search(kept):
             # 字号里必须有汉字。「A有限公司」不是中文公司名，
             # 把 latin 字母当成字号会凭空造出一个主体。
             continue
-        name = _strip_unbalanced_parens(prefix + text[m.start("suf"):end])
+        tail = text[m.start("suf"):end]
+        name = _strip_unbalanced_parens(kept + tail)
         if _generic_fragment(name):
             continue
         if _is_in_bracket(text, m.start(), end) and _ends_with_org_form(name):
             # 注解括号里的内容不是主体：「（华信集团）北京华信科技有限公司」
             continue
+        restored = name
+        if wider != kept:
+            # 裁剪点落在字号内部：把更宽的那一段还回来。
+            candidate = _strip_unbalanced_parens(wider + tail)
+            if (candidate != name and _CJK_RE.search(wider)
+                    and not _is_form_fragment(wider)
+                    and not _generic_fragment(candidate)):
+                restored = candidate
+        key = (normalize_name(name), normalize_name(restored))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((name, restored))
+    return out
+
+
+def extract_company_names(text: str) -> list[str]:
+    """抽取公司类名称，按出现顺序去重。
+
+    返回的是**连接词裁剪之后**的那一段（可能比真名短，见
+    extract_company_occurrences）。聚类与报告用的是还原名，用这个
+    函数拿不到——它只是抽取器的原始结果。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for name, _restored in extract_company_occurrences(text):
         key = normalize_name(name)
         if key in seen:
             continue

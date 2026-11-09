@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from entities import extract_company_names
+from entities import extract_company_occurrences
 
 DEPTH_PARAMS = {
     "quick": {"max_chars": 3000, "neighbor_window": 0},
@@ -135,7 +135,9 @@ def build_chunks(documents: list[dict], depth: str = "standard") -> list[dict]:
             for b in buffer:
                 t = _block_text(b)
                 text_parts.append(t)
-                entities.extend(extract_company_names(t))
+                # 用**还原名**，与确定性层的主体清单保持一致
+                entities.extend(restored for _n, restored in
+                             extract_company_occurrences(t))
                 numbers.extend(_numbers(t))
                 citations.extend(_citations(t))
             text = "\n".join(p for p in text_parts if p)

@@ -13,7 +13,7 @@ from common import fmt_value as _fmt
 from entities import (
     canonical_core,
     canonical_name,
-    extract_company_names,
+    extract_company_occurrences,
     group_variants,
     is_full_company_name,
 )
@@ -601,7 +601,10 @@ def check_entities(documents: list[dict]) -> tuple[list[dict], dict]:
     for doc in documents:
         found: list[str] = []
         for _, b in _text_blocks([doc], include_tables=True):
-            found.extend(extract_company_names(b.get("text", "")))
+            # 用**还原名**：连接词裁剪把字号劈掉一半时（两家不同的公司
+            # 都被裁成「贸易港城有限公司」），只有还原名才分得开是谁是谁。
+            found.extend(restored for _name, restored in
+                         extract_company_occurrences(b.get("text", "")))
         per_file[doc["file"]] = found
 
     # 主体清单按文件名排序后建立：同样一批文档换个顺序跑，
