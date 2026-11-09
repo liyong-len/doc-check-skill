@@ -175,6 +175,9 @@ echo "依赖自检通过。"
 #
 # 装到智能体目录这一步由 install/install_skill.py 完成：
 # install.ps1 调用的是同一个文件，两个安装器的行为因此一致。
+#
+# 「写真实家目录」的那段横幅也在那一份代码里（print_home_banner）：
+# 两个安装器的横幅因此是同一段文字，不会分叉。
 ROOT_ARGS=()
 if [ -n "$TARGET_ROOT" ]; then ROOT_ARGS=(--target-root "$TARGET_ROOT"); fi
 if [ "$UPDATE" -eq 1 ]; then

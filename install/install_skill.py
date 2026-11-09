@@ -13,6 +13,10 @@
     --dry-run      只解析目标目录并打印，不写任何文件
     --target-root  改「~ 展开到哪个根目录」，不必动 HOME/USERPROFILE
     --status       打印家目录根、各适配项的目标路径与残留情况
+
+另外：没给 --target-root / DOC_CHECK_TARGET_ROOT 时，写入真实家目录之前
+会先打印一段横幅（见 print_home_banner）。install.sh 与 install.ps1 都调用
+本文件，两个安装器的横幅因此是同一段文字。
 """
 from __future__ import annotations
 
@@ -280,6 +284,26 @@ def install_agent(
     write_text_no_bom(target / "AGENTS.md", AGENTS_NOTE)
 
 
+def print_home_banner(to_install: list[tuple[dict, Path]]) -> None:
+    """写入真实家目录之前，先把这件事明明白白地说出来。
+
+    没有它，最危险的那条路（一条命令直接装进用户自己的家目录）
+    恰好是唯一没有提示的一条路：输出里有目标路径，却没有一句话
+    说明「这就是你的真家目录」。
+
+    这是一段提示，不是一道闸：不需要任何参数，照常一条命令就能装。
+    install.sh 与 install.ps1 都调用本文件，因此两个安装器的横幅
+    是同一段文字，不会分叉。
+    """
+    if not to_install:
+        return
+    print("")
+    print("⚠ 即将写入你的真实家目录")
+    for agent, target in to_install:
+        print(f"  {agent['name']} -> {target}")
+    print("  （若这是误操作，按 Ctrl-C 取消，或用 --dry-run 先看会写到哪里）")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="doc-check 智能体安装阶段")
     parser.add_argument("--repo-root", required=True, help="仓库根目录")
@@ -307,6 +331,9 @@ def main(argv=None) -> int:
     if redirected:
         print("  （由 --target-root / DOC_CHECK_TARGET_ROOT 指定，"
               "不会写入真实家目录）")
+    else:
+        print("  （未指定 --target-root / DOC_CHECK_TARGET_ROOT，"
+              "将写入真实家目录）")
     print(f"仓库目录：{repo_root}")
 
     if args.status:
@@ -321,6 +348,11 @@ def main(argv=None) -> int:
     print("")
     if args.dry_run:
         print("== 试运行（--dry-run）：不会写入任何文件 ==")
+    else:
+        # 只有真的写进真实家目录时才喊。
+        # 试运行不写任何文件，状态查询只读，两条路上都不必喊。
+        if not redirected:
+            print_home_banner(to_install)
     print("本次将写入以下目录：")
     for agent, target in rows:
         if (agent, target) in to_install:
