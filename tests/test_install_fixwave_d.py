@@ -95,9 +95,13 @@ def test_target_root_banner_names_the_root(tmp_path):
     检测是全局的（PATH 上的 claude 命令与家目录无关），安装不是。
     读输出的人必须一眼看出东西装到了哪儿。
     """
+    home = _scratch_home(tmp_path)
     target = tmp_path / "target"
     (target / ".claude").mkdir(parents=True)
-    proc, text = _run(["--target-root", str(target)])
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    proc, text = _run(["--target-root", str(target)], env=env)
     assert proc.returncode == 0
     assert str(target) in text, "横幅里没有目标根目录"
     assert "本次写入的目录" in text, "回执里没有回显写入的目录"
@@ -105,14 +109,26 @@ def test_target_root_banner_names_the_root(tmp_path):
 
 
 def test_target_root_env_var_works_too(tmp_path):
-    """环境变量与命令行参数等价。"""
+    """环境变量与命令行参数等价。
+
+    **HOME 与 USERPROFILE 必须一起隔离**：只给 DOC_CHECK_TARGET_ROOT
+    而不动 HOME，安装器一旦不支持这个环境变量（回归时就会发生），
+    就会退回真实 HOME，把技能装进用户自己的智能体目录。
+    这个测试曾经真的这样干过：拿旧版安装器跑它，三份副本落进了真实 HOME。
+    """
+    home = tmp_path / "home"
+    home.mkdir()
     target = tmp_path / "target"
     (target / ".claude").mkdir(parents=True)
     env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
     env["DOC_CHECK_TARGET_ROOT"] = str(target)
     proc, text = _run([], env=env)
     assert proc.returncode == 0, text
     assert (target / ".claude" / "skills" / "doc-check").exists()
+    assert not (home / ".claude" / "skills" / "doc-check").exists(), \
+        "技能被装进了 HOME 下面"
 
 
 # --- 3. 目标路径在第一次写盘之前打印 ---
