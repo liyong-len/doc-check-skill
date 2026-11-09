@@ -19,6 +19,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="$SCRIPT_DIR"
 VENV_DIR="$REPO_ROOT/.venv"
 
+# 把 pip 的缓存目录钉在虚拟环境里。
+#
+# pip 用 platformdirs 算缓存目录：当 HOME/USERPROFILE 指向一个**还不存在**
+# 的路径时，它算出来的缓存目录会退化成**当前工作目录**下的相对路径，
+# 于是 `pip/cache/http-v2/…`、`pip/cache/selfcheck/…` 就落在用户执行
+# 安装命令的那个目录里——安装器不该往用户的目录里扔东西。
+#
+# 钉死之后缓存进 .venv：那个目录本来就是安装器自己建的，
+# 删掉虚拟环境就一起删掉。必须在**建虚拟环境之前**导出：
+# venv 自带的 ensurepip 也会用 pip 的缓存。
+export PIP_CACHE_DIR="$VENV_DIR/.pip-cache"
+
 UPDATE=0
 DRY_RUN=0
 STATUS=0
