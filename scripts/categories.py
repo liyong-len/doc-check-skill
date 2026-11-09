@@ -10,7 +10,8 @@
 清单放在代码里而不是散在文档里，是为了校验能按字面量做：
 模型自造的英文标签（「typo」「format」）必须在写 findings.json 时就被拦下来，
 不能一路走到报告里显示成「未分类」。references/ 下两份文档里的清单
-由 tests/test_references.py 与本模块对照，文档改了而代码没改，测试会失败。
+由 tests/test_fixwave_d_findings.py::test_the_category_list_matches_the_reference_documents
+与本模块对照，文档改了而代码没改，测试会失败。
 """
 from __future__ import annotations
 

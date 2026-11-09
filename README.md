@@ -79,6 +79,18 @@ bash install/install.sh --status
 检测是全局的（PATH 上的 `claude` 命令与家目录无关），安装不是——
 安装器因此在动手之前就把目标路径打印出来，装完再回显一次。
 
+没给 `--target-root`（也没有 `DOC_CHECK_TARGET_ROOT`）时，安装器写的就是你的
+真实家目录。动手之前它会先打印一段横幅，把要写的绝对路径一条条点名：
+
+```
+⚠ 即将写入你的真实家目录
+  Claude Code -> C:\Users\<你>\.claude\skills\doc-check
+  （若这是误操作，按 Ctrl-C 取消，或用 --dry-run 先看会写到哪里）
+```
+
+横幅是提示，不是闸：一条命令照常装好，不需要任何额外参数。
+`install.sh` 与 `install.ps1` 调用的是同一份代码，横幅因此是同一段文字。
+
 安装器会依次做完这些事：
 
 1. 挑一个可用的 Python。候选顺序两个安装器完全一致：
