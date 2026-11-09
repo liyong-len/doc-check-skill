@@ -296,14 +296,24 @@ def _starts_with_connector(text: str) -> bool:
     return any(text.startswith(w) for w, _level in _CONNECTORS)
 
 
+# 句子级连接词（「甲方」「乙方」「由」「委托」…）：句子层面的标记。
+_SENTENCE_CONNECTORS = tuple(w for w, level in _CONNECTORS if level)
+
 # 句子级连接词里「由」是个例外：它常出现在词的中间（自由、由于、理由），
 # 不能因为候选里有「由」就断定那一段是句子碎片。
 #
 # 其余的句子级连接词（甲方、乙方、委托、采购方…）出现在候选里，
 # 就说明候选前面还有没裁干净的句子碎片。
-_JUNK_MARKERS = tuple(
-    w for w, level in _CONNECTORS if level and w != "由"
-)
+#
+# 补一句代价，免得日后有人把「由」加回去：
+# 把「由」排除在这张表之外，正是**还原名污染**（修复波 H 的 C-1）
+# 那个洞的成因。「方是北京华信科技」「要求由北京华信科技」这类候选里
+# 只有「由」这一个连接词，它既不以连接词开头，也不含表里其余的
+# 十七个标记，于是被当成「不是句子碎片」而发布成公司名。
+# 治它靠的不是把「由」加回这张表（那会把「中国自由贸易港城」
+# 这样的真字号当成碎片），而是**还原名只认切在同一个连接词上的
+# 那个更宽候选**（见 _trim_prefix_details）。
+_JUNK_MARKERS = tuple(w for w in _SENTENCE_CONNECTORS if w != "由")
 
 
 def _is_junk_candidate(text: str) -> bool:
@@ -317,13 +327,16 @@ def _is_junk_candidate(text: str) -> bool:
     return any(w in text for w in _JUNK_MARKERS)
 
 
-def _cut_candidates(prefix: str) -> list[str]:
+def _cut_candidates(prefix: str) -> list[tuple[str, str]]:
     """连接词裁剪时**所有**合格的切分，按发现顺序。
 
+    每条是 (切分之后剩下的候选, 切这一刀用的连接词)。
+
     _trim_prefix 只取其中最短的一个；这里把全部候选留下来，是为了判断
-    **裁剪点是不是落在字号内部**（见 _trim_prefix_details）。
+    **裁剪点是不是落在字号内部**（见 _trim_prefix_details）。连接词一并
+    记下来，是因为还原名只认**切在同一个连接词上**的那一个候选。
     """
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     for word, sentence_level in _CONNECTORS:
         start = 0
         while True:
@@ -332,13 +345,13 @@ def _cut_candidates(prefix: str) -> list[str]:
                 break
             candidate = prefix[idx + len(word):].strip()
             if _connector_cut_allowed(prefix, idx, sentence_level, candidate):
-                out.append(candidate)
+                out.append((candidate, word))
             start = idx + 1
     return out
 
 
 def _trim_prefix_details(prefix: str) -> tuple[str, str]:
-    """返回 (采用的字号前缀, 更宽的候选)。
+    """返回 (采用的字号前缀, 还原名)。
 
     采用的仍然是**最短**的合格切分——这条口径一个字没动。
     第二个返回值是「裁剪点落在字号内部」时更接近真字号的那一个切分。
@@ -348,6 +361,19 @@ def _trim_prefix_details(prefix: str) -> tuple[str, str]:
     「贸易港城」——裁剪取最短的那个，于是字号被劈掉一半。另一个切分
     才是完整的字号。
 
+    **还原名只认切在同一个连接词上的那个更宽候选。**
+    这一条是修复波 H 的 C-1：「受托方是北京华信科技」有两个合格切分，
+    一个切在「受托」上（剩下「方是北京华信科技」），一个切在「是」上
+    （剩下「北京华信科技」）。最短的那个是「北京华信科技」，而更宽的
+    那个「方是北京华信科技」切在**另一个**连接词上——它是另一段
+    句子碎片，不是同一个字号的更宽视角，把它还原成公司名就会发布出
+    「方是北京华信科技有限公司」这种并不存在的公司。
+
+    真正的还原长这样：「本项目由中国自由贸易港城」的两个切分**都切在
+    「由」上**（「中国自由贸易港城」与「贸易港城」）——同一个连接词
+    出现两次，说明第二个「由」是「自由」的一半，两处切的是同一个
+    字号。这种情况才还原。
+
     只认**不以连接词开头**的候选：「甲方及乙方共同委托北京华信科技」
     这种句子碎片不是字号，不能拿来还原。没有这样的候选时，第二个
     返回值与第一个相同（没有可还原的余地）。
@@ -356,12 +382,14 @@ def _trim_prefix_details(prefix: str) -> tuple[str, str]:
     if not cands:
         kept = prefix.strip()
         return kept, kept
-    kept = cands[0]
-    for c in cands[1:]:
+    kept, kept_word = cands[0]
+    for c, word in cands[1:]:
         if len(c) < len(kept):
-            kept = c
-    wider = [c for c in cands
-             if len(c) > len(kept) and not _is_junk_candidate(c)]
+            kept, kept_word = c, word
+    wider = [c for c, word in cands
+             if word == kept_word
+             and len(c) > len(kept)
+             and not _is_junk_candidate(c)]
     if not wider:
         return kept, kept
     return kept, max(wider, key=len)
@@ -537,6 +565,11 @@ def extract_company_occurrences(text: str) -> list[tuple[str, str]]:
     裁剪后的名字是连接词裁剪留下来的那一段；还原名是**裁剪点落在字号
     内部**时更接近真字号的那一段（见 _trim_prefix_details）。两者都是
     文档里逐字存在的字符串。
+
+    **警告：还原名是文档里逐字存在的字符串，不等于它是一个公司名。**
+    逐字存在只说明它不是凭空造出来的；它照样可能是半句句子。
+    裁剪后的名字同样可能是半句句子（裁剪只做一遍，见「已知局限」）。
+    拿这两个值当公司名去展示、去归组之前，先想一遍它像不像一个字号。
 
     「本项目由中国自由贸易港城有限公司」裁出来的是「贸易港城有限公司」，
     还原名是「中国自由贸易港城有限公司」；「中国自由贸易港城有限公司」
@@ -722,7 +755,32 @@ def canonical_name(name: str) -> str:
     return _strip_leading_connector(normalize_name(name))
 
 
-def _extra_head_is_clean(longer: str, shorter: str) -> bool:
+def _looks_like_fragment(head: str) -> bool:
+    """多出来的那部分是不是**看起来像句子碎片**。
+
+    两种痕迹：
+
+    - 里面有句子级连接词（「甲方」「委托」「采购方」…）：那是句子的成分，
+      例如「甲方指定的北京华信科技」多出来的「甲方指定的」；
+    - 以「的」结尾：那是相对从句的标记（「指定的」「委托的」）。
+
+    **「由」不算碎片的标记**：它常出现在字号中间（「自由」），
+    拿它当标记会把「北方自由」这种专有名词误判成句子碎片——
+    而「北方自由贸易港城有限公司」与「贸易港城有限公司」恰恰是
+    两家不同的公司，不能因为差一截就并成一家。理由与 _JUNK_MARKERS
+    把「由」排除在外一样。
+
+    两种痕迹都没有时，多出来的是一段**专有名词**（「北方自由」）。
+    文档里没有任何依据说它是同一家公司的写法差异——它可能是
+    另一家公司（见 _extra_head_is_clean）。
+    """
+    if any(w in head for w in _JUNK_MARKERS):
+        return True
+    return head.endswith("的")
+
+
+def _extra_head_is_clean(longer: str, shorter: str,
+                         require_fragment: bool = False) -> bool:
     """较长的核心字号比短的多出来的部分是不是「同一个主体的写法差异」。
 
     「联合网络通信」与「网络通信」多出来的「联合」是字号的一部分，
@@ -738,8 +796,20 @@ def _extra_head_is_clean(longer: str, shorter: str) -> bool:
     「中国联合网络通信集团有限公司」与「联合网络通信有限公司」
     是集团公司与子公司，两家不同的公司。国家前缀与行政区划前缀
     在这件事上作用相同，因此同样归入「区分标志」。
+
+    **require_fragment=True 时（两个都是全称时的后缀关系），
+    多出来的那部分还必须看起来是句子碎片。**
+    理由：两段专有名词差一截时，文档里没有依据说它们是同一家公司。
+    「北方自由贸易港城有限公司」与「贸易港城有限公司」就是这么来的
+    ——后者是前者的字号被裁掉一半之后剩下的残缺名，可它同时也是
+    另一家公司（「中国自由贸易港城有限公司」）裁出来的残缺名。
+    把它们并成一家，报出的是确定级的「统一名称写法」建议，
+    让用户去统一两家不同的公司——这是确定级的假阳性。
+    不并，只报疑似级的「主体串写」，是这里唯一安全的做法。
     """
     head = longer[: len(longer) - len(shorter)]
+    if not head:
+        return False
     if _starts_with_country(head):
         # 国家前缀与行政区划前缀一样是区分标志
         return False
@@ -747,7 +817,11 @@ def _extra_head_is_clean(longer: str, shorter: str) -> bool:
         return False
     if _starts_with_region(head):
         return False
-    return not _ends_with_industry_word(head)
+    if _ends_with_industry_word(head):
+        return False
+    if require_fragment:
+        return _looks_like_fragment(head)
+    return True
 
 
 def _ends_with_industry_word(core: str) -> bool:
@@ -811,6 +885,13 @@ def same_entity(a: str, b: str) -> bool:
     是两家公司（「北京华信集团有限公司」与「北京华信科技有限公司」：
     集团是母公司的形式词，剥掉之后与简称同形，但它们不是一家）。
 
+    **后缀关系在两个都是全称时还要多一条**：多出来的那部分必须
+    **看起来是句子碎片**（含句子级连接词，或以「的」结尾）。
+    两段专有名词差一截时，文档里没有依据说它们是同一家公司——
+    「北方自由贸易港城有限公司」与「贸易港城有限公司」就是这么来的，
+    后者同时也是另一家公司裁出来的残缺名。合成一家，报出的就是
+    确定级的「统一名称写法」建议：让用户去统一两家不同的公司。
+
     裸字号在文档里指向哪一家要看上下文，这个判定在 group_variants 里做；
     这里只回答「有没有可能是同一家」。
     """
@@ -822,8 +903,13 @@ def same_entity(a: str, b: str) -> bool:
     shorter, longer = sorted([ca, cb], key=len)
     if len(shorter) < 2:
         return False
-    if longer.endswith(shorter) and _extra_head_is_clean(longer, shorter):
-        return True
+    if longer.endswith(shorter):
+        short_name = a if canonical_core(a) == shorter else b
+        # 两个都是全称时，多出来的那部分必须是句子碎片；
+        # 裸字号那一侧是「简称」的问题，宽松一点。
+        if _extra_head_is_clean(longer, shorter,
+                                require_fragment=_has_form_word(short_name)):
+            return True
     if longer.startswith(shorter):
         short_name = a if canonical_core(a) == shorter else b
         if _is_bare_字号(short_name) and _is_plausible_short_form(shorter):
