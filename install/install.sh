@@ -34,6 +34,10 @@ VENV_DIR="$REPO_ROOT/.venv"
 # 钉死之后缓存进 .venv：那个目录本来就是安装器自己建的，
 # 删掉虚拟环境就一起删掉。必须在**建虚拟环境之前**导出：
 # venv 自带的 ensurepip 也会用 pip 的缓存。
+#
+# 这一行只影响**子进程**的环境：安装器是用户 shell 起的另一个进程，
+# export 不会漏回调用方的会话。install.ps1 那边的 $env: 写的是**进程**
+# 的环境，会漏，所以那边多了一步「退出前还原」。
 export PIP_CACHE_DIR="$VENV_DIR/.pip-cache"
 
 UPDATE=0

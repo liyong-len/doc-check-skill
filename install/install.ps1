@@ -23,18 +23,6 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $InstallDir = Join-Path $RepoRoot "install"
 $VenvDir = Join-Path $RepoRoot ".venv"
 
-# 把 pip 的缓存目录钉在虚拟环境里。
-#
-# 与 install.sh 同一件事、同一位置（spec §11.1「安装流程」：两个安装器
-# 走的是同一套流程，行为必须一致）。
-# pip 用 platformdirs 算缓存目录；有的平台与版本组合下，算出来的路径会
-# 退化成**当前工作目录**下的相对路径，缓存就落在用户执行安装命令的
-# 那个目录里——安装器不该往用户的目录里扔东西。触发条件依平台而异，
-# 这里不写死是哪一种机制，只是把缓存目录钉死。
-#
-# 必须在**建虚拟环境之前**设好：venv 自带的 ensurepip 也会用 pip 的缓存。
-$env:PIP_CACHE_DIR = Join-Path $VenvDir ".pip-cache"
-
 function Write-ErrLine([string]$Message) {
     [Console]::Error.WriteLine($Message)
 }
@@ -185,73 +173,106 @@ if ($Status -or $DryRun) {
 }
 
 # --- 3. 创建虚拟环境 ---
-if (-not (Test-Path $VenvDir)) {
-    Write-Host "创建虚拟环境 .venv ..."
+#
+# 把 pip 的缓存目录钉在虚拟环境里。
+#
+# 与 install.sh 同一件事、同一位置（spec §11.1「安装流程」：两个安装器
+# 走的是同一套流程，行为必须一致）。
+# pip 用 platformdirs 算缓存目录；有的平台与版本组合下，算出来的路径会
+# 退化成**当前工作目录**下的相对路径，缓存就落在用户执行安装命令的
+# 那个目录里——安装器不该往用户的目录里扔东西。触发条件依平台而异，
+# 这里不写死是哪一种机制，只是把缓存目录钉死。
+#
+# 必须在**建虚拟环境之前**设好：venv 自带的 ensurepip 也会用 pip 的缓存。
+#
+# **这个变量只在本脚本里有效。** 在 PowerShell 里给 $env: 赋值改的是
+# **进程**的环境：脚本被 `powershell -Command "& install.ps1; ..."` 这样
+# 调用时，脚本与调用方在同一个会话里，变量就留在调用方的会话里了——
+# 安装器不该改调用方的环境。脚本退出前把原来的值放回去（原来没有就
+# 删掉）。
+# 钉死缓存目录这件事两个安装器是同一件事；**会不会漏**是两种 shell 的
+# 语义不同：install.sh 的 export 写的是**子进程**的环境，天然不漏；
+# PowerShell 的 $env: 写的是**进程**的环境，会漏，所以这边要还原。
+$HadPipCacheDir = Test-Path Env:PIP_CACHE_DIR
+$PrevPipCacheDir = $env:PIP_CACHE_DIR
+try {
+    $env:PIP_CACHE_DIR = Join-Path $VenvDir ".pip-cache"
+
+    if (-not (Test-Path $VenvDir)) {
+        Write-Host "创建虚拟环境 .venv ..."
+        $prev = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $PyExe.Exe @($PyExe.Args) -m venv $VenvDir
+        } finally {
+            $ErrorActionPreference = $prev
+        }
+    }
+    $VenvPy = Join-Path $VenvDir "Scripts/python.exe"
+    if (-not (Test-Path $VenvPy)) {
+        Write-ErrLine "虚拟环境创建失败：$VenvPy 不存在"
+        exit 1
+    }
+
+    # --- 4. 安装依赖 ---
+    Write-Host "安装依赖 ..."
     $prev = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        & $PyExe.Exe @($PyExe.Args) -m venv $VenvDir
+        & $VenvPy -m pip install --upgrade pip | Out-Null
+        & $VenvPy -m pip install -r (Join-Path $RepoRoot "requirements.txt")
+        $pipCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prev
     }
-}
-$VenvPy = Join-Path $VenvDir "Scripts/python.exe"
-if (-not (Test-Path $VenvPy)) {
-    Write-ErrLine "虚拟环境创建失败：$VenvPy 不存在"
-    exit 1
-}
+    if ($pipCode -ne 0) {
+        Write-ErrLine "依赖安装失败。Python $($PyExe.Ver) 可能缺少预编译轮子，请改用 Python 3.11 或 3.12。"
+        exit 1
+    }
 
-# --- 4. 安装依赖 ---
-Write-Host "安装依赖 ..."
-$prev = $ErrorActionPreference
-try {
-    $ErrorActionPreference = "Continue"
-    & $VenvPy -m pip install --upgrade pip | Out-Null
-    & $VenvPy -m pip install -r (Join-Path $RepoRoot "requirements.txt")
-    $pipCode = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $prev
-}
-if ($pipCode -ne 0) {
-    Write-ErrLine "依赖安装失败。Python $($PyExe.Ver) 可能缺少预编译轮子，请改用 Python 3.11 或 3.12。"
-    exit 1
-}
+    # --- 5. 依赖自检 ---
+    $prev = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $VenvPy -c "import docx, openpyxl, pdfplumber, lxml"
+        $importCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    if ($importCode -ne 0) {
+        Write-ErrLine "依赖导入自检失败，请换用 Python 3.11 或 3.12 重建虚拟环境。"
+        exit 1
+    }
+    Write-Host "依赖自检通过。"
 
-# --- 5. 依赖自检 ---
-$prev = $ErrorActionPreference
-try {
-    $ErrorActionPreference = "Continue"
-    & $VenvPy -c "import docx, openpyxl, pdfplumber, lxml"
-    $importCode = $LASTEXITCODE
+    # --- 6. 安装到各智能体 ---
+    #
+    # 装到智能体目录这一步由 install/install_skill.py 完成：
+    # install.sh 调用的是同一个文件，两个安装器的行为因此一致。
+    #
+    # 「写真实家目录」的那段横幅也在那一份代码里（print_home_banner）：
+    # 两个安装器的横幅因此是同一段文字，不会分叉。
+    $updateArgs = @()
+    if ($Update) { $updateArgs = @("--update") }
+    $rootArgs = @()
+    if ($TargetRoot) { $rootArgs = @("--target-root", $TargetRoot) }
+    $prev = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $VenvPy (Join-Path $InstallDir "install_skill.py") --repo-root $RepoRoot --venv-py $VenvPy @updateArgs @rootArgs
+        $installCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    if ($installCode -ne 0) {
+        Write-ErrLine "安装到智能体目录失败。"
+        exit 1
+    }
 } finally {
-    $ErrorActionPreference = $prev
-}
-if ($importCode -ne 0) {
-    Write-ErrLine "依赖导入自检失败，请换用 Python 3.11 或 3.12 重建虚拟环境。"
-    exit 1
-}
-Write-Host "依赖自检通过。"
-
-# --- 6. 安装到各智能体 ---
-#
-# 装到智能体目录这一步由 install/install_skill.py 完成：
-# install.sh 调用的是同一个文件，两个安装器的行为因此一致。
-#
-# 「写真实家目录」的那段横幅也在那一份代码里（print_home_banner）：
-# 两个安装器的横幅因此是同一段文字，不会分叉。
-$updateArgs = @()
-if ($Update) { $updateArgs = @("--update") }
-$rootArgs = @()
-if ($TargetRoot) { $rootArgs = @("--target-root", $TargetRoot) }
-$prev = $ErrorActionPreference
-try {
-    $ErrorActionPreference = "Continue"
-    & $VenvPy (Join-Path $InstallDir "install_skill.py") --repo-root $RepoRoot --venv-py $VenvPy @updateArgs @rootArgs
-    $installCode = $LASTEXITCODE
-} finally {
-    $ErrorActionPreference = $prev
-}
-if ($installCode -ne 0) {
-    Write-ErrLine "安装到智能体目录失败。"
-    exit 1
+    # 还原调用方的环境：原来有值就放回去，原来没有就删掉。
+    if ($HadPipCacheDir) {
+        [System.Environment]::SetEnvironmentVariable('PIP_CACHE_DIR', $PrevPipCacheDir, 'Process')
+    } else {
+        [System.Environment]::SetEnvironmentVariable('PIP_CACHE_DIR', $null, 'Process')
+    }
 }
