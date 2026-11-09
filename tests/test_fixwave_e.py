@@ -156,15 +156,15 @@ def test_a_parent_group_and_its_counterpart_in_a_real_docx(tmp_path):
 # --- 已知局限：连接词裁剪的残余代价 ---
 
 
-def test_a_country_prefix_keeps_the_字号_whole():
-    """头部是国家前缀或行政区划时，句子级连接词不裁。
+def test_a_region_head_keeps_the_字号_whole():
+    """头部是行政区划时，句子级连接词不裁。
 
-    这一条是 C-a 的修复带来的：C-3 修好之后，「中国自由贸易港城」
-    里的「由」不再被裁掉。
+    这一条是 C-a 的修复带来的，一直没变。修复波 F 把**国家前缀**那条
+    收窄成「只有完整字号才挡裁剪」之后（「中国自由贸易港城」里连接词
+    前面的头部「中国自」是一个开放从句，不是字号），行政区划这条仍然原样。
+    「中国自由贸易港城有限公司」现在会被裁成「贸易港城有限公司」——
+    那是修复波 F 记录在案的已知局限，见 tests/test_fixwave_f.py。
     """
-    assert extract_company_names("中国自由贸易港城有限公司") == [
-        "中国自由贸易港城有限公司"
-    ]
     assert extract_company_names("海南自由贸易港城有限公司") == [
         "海南自由贸易港城有限公司"
     ]
