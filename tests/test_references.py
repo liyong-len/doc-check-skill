@@ -271,3 +271,79 @@ def test_format_rules_states_truncation_boundary():
     assert "30 个字仍能完整匹配" in text
     assert "31 个字起丢开头的字" in text
     assert "不会导致整条抽不到" in text
+
+
+# --- 文档修正波：文档必须与代码的实际行为一致 ---
+#
+# 这些断言盯的是「文档里写下的那条边界还在不在」。
+# 边界一旦被改回去（或者代码变了而文档没跟着改），这里会失败。
+
+
+def test_format_rules_documents_the_silent_merge_limitation():
+    """角色词前面带填充词时，两家公司会静默合并——文档必须写明这一条。
+
+    旧版文档写的是「冠名是行政区划时两家不同的公司分得开，不会静默合并」，
+    那句话对带填充词的写法是假的：触发条件其实是**角色词是不是名字串的开头**。
+    """
+    text = _read("format-rules.md")
+    assert "角色词前面带填充词时，两家不同的公司会被并成一家" in text
+    assert "本项目中标为北京自由空间科技有限公司" in text
+    assert "本项目中标为上海自由空间科技有限公司" in text
+    # 「冠名是行政区划就分得开」这句必须带上限定条件，不能再是裸承诺
+    assert "两家不同的公司分得开，报的是疑似级的 P0「主体串写」，不会静默合并" not in text
+    assert "在角色词位于名字串开头时" in text
+
+
+def test_format_rules_states_the_real_trigger_of_the_restoration():
+    """条款 (b) 的触发点是「角色词位于名字串开头」，不是「冠名是不是行政区划」。"""
+    text = _read("format-rules.md")
+    assert "还原名的覆盖面" in text
+    assert "角色词位于名字串开头" in text
+
+
+def test_format_rules_describes_guard_three_as_the_code_does():
+    """第三条守卫只检查「以行政区划或国家前缀开头」，不检查是不是字号本身的开头。"""
+    text = _read("format-rules.md")
+    assert "以行政区划或国家前缀开头" in text
+    # 旧说法：条款 (b) 会保证剩下的是「字号本身的开头」
+    assert "只剩**字号本身的开头**" not in text
+    assert "北京分公司确认自由空间科技有限公司" in text
+
+
+def test_format_rules_states_the_copula_set():
+    """系词表只有「是」「为」；「系」「即」不处理。"""
+    text = _read("format-rules.md")
+    assert '_COPULAS = ("是", "为")' in text
+    assert "中标人系北京自由空间科技有限公司" in text
+
+
+def test_format_rules_documents_the_role_word_table_oddities():
+    """角色词表里收着「由」，而它不是角色词；碎片守卫的适用范围也要写明。"""
+    text = _read("format-rules.md")
+    assert "角色词表里也收了「由」" in text
+    assert "_splits_a_connector_word" in text
+
+
+def test_format_rules_documents_the_dropped_company_limitation():
+    """通用片段判定用的是裁剪后的名字，整家公司可能被丢掉——要写明它的交互。"""
+    text = _read("format-rules.md")
+    assert "通用片段判定用的是裁剪后的名字，整家公司可能被丢掉" in text
+    assert "本项目中标为青岛自由贸易服务有限公司" in text
+    assert "通用片段不是名字" in text
+
+
+def test_severity_doc_does_not_overstate_the_entity_list():
+    """entities.names 的归并键是核心字号，不是「是不是同一家公司」。"""
+    text = _read("severity.md")
+    row = [line for line in text.splitlines() if "entities.names" in line]
+    assert row, "severity.md 里没有 entities.names 那一行"
+    assert "同一个主体只有一条" not in row[0]
+    assert "核心字号" in row[0]
+
+
+def test_reference_docs_say_the_entity_list_has_gaps():
+    """主体名清单本身有缺口：报告里没有的名字不等于文档里没有这家公司。"""
+    for name in ("severity.md", "content-rules.md", "report-spec.md"):
+        text = _read(name)
+        assert "不等于文档里没有这家公司" in text, name
+

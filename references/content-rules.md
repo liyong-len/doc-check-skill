@@ -8,7 +8,8 @@
 ## 与确定性层的分工
 
 阶段①的确定性检查已经产出体例、字体、表格、编号、单位、主体名等类别的结论，写在
-consistency.json 里（键有 style_profile、issues、entities.per_file、stats，说明见 severity.md）。
+consistency.json 里（顶层键有 style_profile、issues、entities、stats；`entities` 下面还有
+names / variants / per_file 三个子键，说明见 severity.md）。
 **这些类别不由你产出**，也不要重复写一遍：
 
 字体一致性、段落格式一致性、标题层级体例、图表题注体例、表格体例、列表与编号、
@@ -40,6 +41,8 @@ consistency.json 里（键有 style_profile、issues、entities.per_file、stats
 只有当你能指出具体段落、具体句子里的名称与该文件应有的主体不符时，才写这一条。
 分片中的 entities 是脚本预标注的主体名。若某主体名与该文档其余部分的主体名不同，
 且文内没有明确的「协作方」「分包方」等说明，标记为疑似 · 需人工核实。
+**预标注的名字本身有已知缺口**：它取的是**还原名**，可能是一段句子碎片，也可能有整家公司
+因为抽取规则被丢掉（见 format-rules.md 的「已知局限」）。**分片里没有这个名字，不等于文档里没有这家公司**——主体名仍要自己读原文确认。
 
 ### 5. 引用张冠李戴
 引用标记指向的内容与引用处语境不符。判据：正文说「见图 3-2 的曲线走势」，而文中 3-2 图讲的是设备清单。
