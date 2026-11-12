@@ -21,13 +21,40 @@ from labels import (
     locator_type_label,
 )
 from report_style import CSS
+from roles import role_label, role_sort_key
 from schema import derive_ids, validate_findings
+
+# 样式字段的中文名。与 analyze.py 的 _FIELD_LABELS 同源，
+# 报告里「项目」列显示的是它，不是内部字段名。
+_FIELD_LABELS = {
+    "font_latin": "西文字体",
+    "font_ea": "中文字体",
+    "size_pt": "字号",
+    "align": "对齐方式",
+    "indent_left_pt": "左缩进",
+    "indent_first_pt": "首行缩进",
+    "line_spacing": "行距",
+    "space_before_pt": "段前距",
+    "space_after_pt": "段后距",
+}
 
 SEVERITY_ORDER = ["P0", "P1", "P2", "P3"]
 
+# 样式类问题：按角色聚合后放在 §4.2，不在 §3 逐条展开。
+_STYLE_CATEGORIES = ("字体一致性", "段落格式一致性")
+_CONVENTION_CATEGORIES = (
+    "标题层级体例", "图表题注体例", "表格体例", "列表与编号",
+    "引用标记", "数字与单位", "主体名称",
+)
+
 # last-findings.json 的格式版本。旧版本没有这个键，也没有确定性层的问题，
 # 与它对比时不能把今天跑出来的确定性问题说成「新增」。
-BASELINE_FORMAT_VERSION = 2
+#
+# 版本 3：确定性层改按段落角色分组算样式主流值（见 scripts/roles.py）。
+# 版本 2 写出的基线里存的是旧口径的样式问题（标题与正文混算），
+# 与今天的结论不是一回事——拿它对比会说出一堆假的「新增」与「已修复」。
+# 所以版本 2 及更早的基线只比语义层。
+BASELINE_FORMAT_VERSION = 3
 
 
 def esc(v) -> str:
@@ -253,20 +280,44 @@ def _section_2(consistency, findings) -> str:
 
 
 def _section_3(consistency, findings, manifest) -> str:
+    """按文件明细。
+
+    样式类问题（字体一致性、段落格式一致性）**不在这里逐条展开**——
+    它们按角色聚合后放在 §4.2。这里逐条展开的是语义层问题与
+    确定性层的其余类别（表格体例、术语与缩写等），条数少、每条信息量大。
+
+    样式问题之所以要聚合：一份四文档材料能产生几百条样式偏离，
+    其中绝大多数是同一件事（某文件正文字体不统一），
+    逐条铺开会把真正需要逐条看的问题挤到看不见的地方。
+    """
     by_file: dict[str, list[dict]] = {}
     for f in _issue_list(consistency, "issues") + list(findings):
+        if f.get("category") in _STYLE_CATEGORIES:
+            continue
         by_file.setdefault(f.get("file", ""), []).append(f)
+    style_counts: dict[str, int] = {}
+    for f in _issue_list(consistency, "issues"):
+        if f.get("category") in _STYLE_CATEGORIES:
+            fname = f.get("file", "")
+            style_counts[fname] = style_counts.get(fname, 0) + 1
     out = ["<h2 id='s3'>§3 按文件明细</h2>"]
-    if not by_file:
+    if not by_file and not style_counts:
         out.append("<p>未发现问题。</p>")
         return "".join(out)
-    for fname in sorted(by_file):
-        items = by_file[fname]
+    for fname in sorted(set(by_file) | set(style_counts)):
+        items = by_file.get(fname, [])
+        style_n = style_counts.get(fname, 0)
+        total = len(items) + style_n
         out.append(
             f"<details open><summary>{esc(_file_label(fname))}"
-            f"（{len(items)} 个问题）</summary>"
+            f"（{total} 个问题）</summary>"
         )
         out.append(_file_summary(manifest, fname))
+        if style_n:
+            out.append(
+                f"<p class='muted'>另有 {style_n} 处样式问题"
+                f"（字体、段落格式），按角色聚合列在 §4.2。</p>"
+            )
         groups: dict[str, list[dict]] = {}
         for f in items:
             groups.setdefault(category_label(f.get("category")), []).append(f)
@@ -307,11 +358,81 @@ _LIMITATION = (
 )
 
 
-_STYLE_CATEGORIES = ("字体一致性", "段落格式一致性")
-_CONVENTION_CATEGORIES = (
-    "标题层级体例", "图表题注体例", "表格体例", "列表与编号",
-    "引用标记", "数字与单位", "主体名称",
-)
+def _style_profile_rows(profile: dict, only=None) -> list[list[str]]:
+    """样式主流值表。
+
+    主流值按**角色**给出。混算一个「全文主流值」在报告里是误导性的：
+    标题与正文本就不同，混算出来的那个数既不是标题的写法也不是正文的写法，
+    读者拿它当标准去改，改出来的东西两头都不对。
+
+    only 限定只列哪些 (角色, 文件)：**只列出有偏离的那些**。
+    没有偏离的角色，读者不需要知道它的主流值——列出来只是把表格撑长。
+    一份四文档材料的角色×文件×字段组合有上百个，全列出来没人看得下去。
+    """
+    rows = []
+    for role in sorted(profile, key=role_sort_key):
+        files = profile[role].get("files", {})
+        for fname in sorted(files):
+            if only is not None and (role, fname) not in only:
+                continue
+            for key, v in files[fname].items():
+                rows.append([
+                    esc(role_label(role)),
+                    esc(_file_label(fname)),
+                    esc(v.get("label", key)),
+                    # 主流值可能是 None（这一项多数段落没设置）。空单元格读起来
+                    # 像坏掉的表格，写「未设置」才是事实。
+                    esc(fmt_value(v.get("dominant"))),
+                    esc(v.get("count", 0)),
+                    esc(v.get("total", 0)),
+                ])
+    return rows
+
+
+def _aggregate_style_issues(style_issues: list[dict]) -> list[list[str]]:
+    """把样式偏离聚合成一行一个「问题」。
+
+    同一个 (文件, 角色, 项目, 实际取值) 的偏离合成一行，
+    给出处数与位置列表。几百条偏离通常只有十几种组合，
+    逐条铺开会让读者看不出「到底有几件事要改」。
+    """
+    buckets: dict[tuple, dict] = {}
+    for i in style_issues:
+        loc = i.get("locator") or {}
+        if not isinstance(loc, dict):
+            loc = {}
+        role = loc.get("role", "")
+        key = (
+            i.get("file", ""),
+            role,
+            loc.get("field", ""),
+            i.get("description", ""),
+        )
+        entry = buckets.setdefault(key, {
+            "file": i.get("file", ""),
+            "role": role,
+            "field": loc.get("field", ""),
+            "description": i.get("description", ""),
+            "suggestion": i.get("suggestion", ""),
+            "locations": [],
+        })
+        entry["locations"].append(_locator_text(loc))
+    rows = []
+    for key in sorted(buckets, key=lambda k: (k[0], role_sort_key(k[1]), k[2], k[3])):
+        e = buckets[key]
+        rows.append([
+            esc(_file_label(e["file"])),
+            esc(role_label(e["role"])),
+            esc(_field_label(e["field"])),
+            esc(e["description"]),
+            str(len(e["locations"])),
+            esc("、".join(e["locations"])),
+        ])
+    return rows
+
+
+def _field_label(field: str) -> str:
+    return _FIELD_LABELS.get(field, field)
 
 
 def _section_4(consistency: dict) -> str:
@@ -320,29 +441,33 @@ def _section_4(consistency: dict) -> str:
     issues = _issue_list(consistency, "issues")
 
     out.append("<h3>4.1 样式主流值</h3>")
-    if profile:
-        rows = []
-        for key, v in profile.items():
-            rows.append([
-                esc(v.get("label", key)),
-                # 主流值可能是 None（这一项多数段落没设置）。空单元格读起来
-                # 像坏掉的表格，写「未设置」才是事实。
-                esc(fmt_value(v.get("dominant"))),
-                esc(v.get("count", 0)),
-                esc(v.get("total", 0)),
-            ])
-        out.append(_table(["项目", "主流值", "出现次数", "统计段落数"], rows))
+    # 只列有偏离的角色×文件：没有偏离的不必占表格位置。
+    deviating = set()
+    for i in issues:
+        if i.get("category") not in _STYLE_CATEGORIES:
+            continue
+        loc = i.get("locator") or {}
+        if not isinstance(loc, dict):
+            loc = {}
+        deviating.add((loc.get("role", ""), i.get("file", "")))
+    rows = _style_profile_rows(profile, only=deviating or None)
+    if rows:
+        out.append(_table(
+            ["角色", "文件", "项目", "主流值", "出现次数", "统计段落数"], rows))
     else:
         out.append("<p class='muted'>无可统计的样式数据（文档可能不含结构化样式）。</p>")
 
     out.append("<h3>4.2 样式偏离明细</h3>")
     style_issues = [i for i in issues if i.get("category") in _STYLE_CATEGORIES]
     if style_issues:
+        agg = _aggregate_style_issues(style_issues)
+        out.append(
+            f"<p class='muted'>共 {len(style_issues)} 处偏离，"
+            f"按「文件 + 角色 + 项目 + 实际情况」聚合为 {len(agg)} 组。</p>"
+        )
         out.append(_table(
-            ["文件", "位置", "项目", "原文摘录", "说明"],
-            [[esc(_file_label(i.get("file", ""))), esc(_locator_text(i.get("locator", {}))),
-              esc(category_label(i.get("category"))), esc(i.get("quote", "")),
-              esc(i.get("description", ""))] for i in style_issues],
+            ["文件", "角色", "项目", "说明", "处数", "位置"],
+            agg,
         ))
     else:
         out.append("<p class='muted'>未发现样式偏离。</p>")
@@ -635,16 +760,16 @@ def _baseline_format_version(prev: dict) -> int:
 
 
 def _baseline_has_det_layer(prev: dict) -> bool:
-    """基线里有没有确定性层的问题。
+    """基线里有没有**当前口径**的确定性层问题。
 
-    确定性层的问题要能被对比，基线里必须带着它们。本版本写出的基线
-    带 format_version 标记，也带 issues 数组；早于这个标记的旧基线
-    只带 findings（有的连 issues 键都没有），拿它对比确定性层只会得到
-    「今天跑出来的确定性问题全是新增」——文档一个字没改也不该这么说。
+    确定性层的问题要能被对比，基线里必须带着它们，而且必须是同一口径。
+    版本 3 起样式主流值按段落角色分组算，版本 2 的基线里存的是旧口径
+    （标题与正文混算）的结论——两者不是一回事，拿来对比会说出一堆假的
+    「新增」与「已修复」。所以只认版本 3 及以后写的基线。
     """
-    if "issues" in prev:
-        return True
-    return _baseline_format_version(prev) >= BASELINE_FORMAT_VERSION
+    if _baseline_format_version(prev) >= BASELINE_FORMAT_VERSION:
+        return "issues" in prev
+    return False
 
 
 def render(work: Path, out: Path, baseline: Path | None = None) -> Path:

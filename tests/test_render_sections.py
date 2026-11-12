@@ -4,8 +4,12 @@ from render import build_html
 def _consistency():
     return {
         "style_profile": {
-            "font_ea": {"label": "中文字体", "dominant": "宋体", "count": 40, "total": 42},
-            "size_pt": {"label": "字号", "dominant": 12.0, "count": 40, "total": 42},
+            "正文": {"files": {"a.docx": {
+                "font_ea": {"label": "中文字体", "dominant": "宋体",
+                            "count": 40, "total": 42},
+                "size_pt": {"label": "字号", "dominant": 12.0,
+                            "count": 40, "total": 42},
+            }}},
         },
         "issues": [],
         "entities": {
@@ -226,7 +230,8 @@ def test_section4_2_headers_match_content():
     cons["issues"] = [{
         "id": "i" * 16, "severity": "P2", "category": "字体一致性",
         "detector": "deterministic", "confidence": "确定", "file": "a.docx",
-        "locator": {"type": "paragraph", "index": 3},
+        "locator": {"type": "paragraph", "index": 3, "field": "font_ea",
+                    "role": "正文"},
         "quote": "本段正文摘录", "description": "本处为「黑体」，主流值为「宋体」",
         "suggestion": "统一改为「宋体」",
     }]
@@ -237,8 +242,11 @@ def test_section4_2_headers_match_content():
     # 取 §4.2 那一节里的表头行，逐格核对列名
     section = html.split("4.2 样式偏离明细")[1].split("<h3>4.3")[0]
     header = section.split("</thead>")[0]
-    assert "<th>原文摘录</th>" in header
+    assert "<th>角色</th>" in header
     assert "<th>说明</th>" in header
+    assert "<th>处数</th>" in header
+    assert "<th>位置</th>" in header
+    assert "<th>原文摘录</th>" not in header
     assert "<th>实际情况</th>" not in header
     assert "<th>主流值</th>" not in header
 
@@ -246,7 +254,7 @@ def test_section4_2_headers_match_content():
 def test_build_html_escapes_numeric_cells():
     """§4.1 / §4.4 的计数单元格也必须转义。"""
     cons = _consistency()
-    cons["style_profile"]["font_ea"]["count"] = "<script>x</script>"
+    cons["style_profile"]["正文"]["files"]["a.docx"]["font_ea"]["count"] = "<script>x</script>"
     cons["entities"]["names"][0]["count"] = "<script>y</script>"
     html = build_html({
         "manifest": _manifest(), "consistency": cons,

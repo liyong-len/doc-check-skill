@@ -44,8 +44,10 @@ def _det_issue(**over):
 def _consistency(issues=None, profile=None):
     return {
         "style_profile": profile if profile is not None else {
-            "font_ea": {"label": "中文字体", "dominant": "宋体",
-                        "count": 40, "total": 42},
+            "正文": {"files": {"a.docx": {
+                "font_ea": {"label": "中文字体", "dominant": "宋体",
+                            "count": 40, "total": 42},
+            }}},
         },
         "issues": issues if issues is not None else [],
         "entities": {"names": [], "variants": [], "per_file": {}},
@@ -222,7 +224,7 @@ def test_new_baseline_compares_both_layers(tmp_path):
                        consistency=_consistency(issues=[_det_issue()]))
     render(work, tmp_path / "r1.html")
     baseline = json.loads((work / "last-findings.json").read_text(encoding="utf-8"))
-    assert baseline["format_version"] >= 2
+    assert baseline["format_version"] >= 3
 
     render(work, tmp_path / "r2.html", baseline=work / "last-findings.json")
     html = (tmp_path / "r2.html").read_text(encoding="utf-8")
@@ -237,13 +239,38 @@ def test_last_findings_carries_format_version(tmp_path):
     assert "format_version" in baseline
 
 
+def test_baseline_from_old_style_semantics_is_not_compared(tmp_path):
+    """版本 2 的基线里存的是旧口径的样式问题，不能与今天的结论对比。
+
+    版本 2 的确定性层把标题与正文混在一起算主流值，版本 3 按角色分组。
+    两者不是一回事，拿旧基线对比会说出一堆假的「新增」与「已修复」——
+    文档一个字没改，样式问题的结论却全变了。
+    """
+    work = _write_work(tmp_path, findings=[_finding()],
+                       consistency=_consistency(issues=[_det_issue()]))
+    render(work, tmp_path / "r1.html")
+    old = json.loads((work / "last-findings.json").read_text(encoding="utf-8"))
+    old["format_version"] = 2
+    base = tmp_path / "v2.json"
+    base.write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+
+    render(work, tmp_path / "r2.html", baseline=base)
+    html = (tmp_path / "r2.html").read_text(encoding="utf-8")
+    assert "基线来自旧版本格式" in html
+    assert "新增问题（0）" in html
+
+
 # --- M3：主流值为空 ---
 
 
 def test_section4_1_shows_unset_instead_of_blank_cell():
     profile = {
-        "font_ea": {"label": "中文字体", "dominant": "宋体", "count": 40, "total": 42},
-        "align": {"label": "对齐方式", "dominant": None, "count": 18, "total": 18},
+        "正文": {"files": {"a.docx": {
+            "font_ea": {"label": "中文字体", "dominant": "宋体",
+                        "count": 40, "total": 42},
+            "align": {"label": "对齐方式", "dominant": None,
+                      "count": 18, "total": 18},
+        }}},
     }
     html = _html(consistency=_consistency(profile=profile))
     section = html.split("4.1 样式主流值")[1].split("4.2")[0]

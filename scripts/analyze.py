@@ -17,6 +17,7 @@ from entities import (
     group_variants,
     is_full_company_name,
 )
+from roles import ROLE_LIST_ITEM, is_comparable, paragraph_role, role_label
 from schema import make_finding
 
 # 参与一致性比对的样式字段
@@ -49,7 +50,13 @@ def _iter_paragraph_blocks(documents):
 
 
 def dominant(documents, key: str) -> tuple[object, int, int]:
-    """返回 (主流值, 主流值出现次数, 参与统计的段落总数)。"""
+    """返回 (主流值, 主流值出现次数, 参与统计的段落总数)。
+
+    **这个函数混算了所有段落，只用于不再按角色分组的场合。**
+    样式一致性检查走 `_collect_deviations`，那里按角色分组算主流值。
+    保留它是因为「全文混算的主流值」在别的检查里仍有意义
+    （例如字体指纹去重），但拿它当一致性判据就会把标题报成偏离。
+    """
     counter: Counter = Counter()
     total = 0
     for _, _, style in _iter_paragraph_blocks(documents):
@@ -61,59 +68,141 @@ def dominant(documents, key: str) -> tuple[object, int, int]:
     return value, count, total
 
 
+def _role_groups(documents) -> dict:
+    """把段落按 (文件, 角色) 分组。
+
+    返回 {(文件名, 角色): [(doc, block, style), ...]}。
+    空段落不分组——它没有内容，也没有可比的样式。
+    """
+    groups: dict[tuple, list] = {}
+    for doc, block, style in _iter_paragraph_blocks(documents):
+        role = paragraph_role(block.get("text", ""), style)
+        if not role:
+            continue
+        groups.setdefault((doc["file"], role), []).append((doc, block, style))
+    return groups
+
+
 def style_fingerprint(style: dict) -> tuple:
     return tuple(style.get(k) for k in _FONT_KEYS + _PARA_KEYS)
 
 
 def _collect_deviations(documents, keys, category, severity, min_ratio=0.6):
-    """统计偏离主流值的段落。偏离比例低于 min_ratio 的字段不报，避免个别段落误报。"""
+    """统计偏离主流值的段落。偏离比例低于 min_ratio 的字段不报，避免个别段落误报。
+
+    主流值按**段落角色**分组计算，不按全文混算：标题（16pt 黑体）与正文
+    （12pt 宋体）本来就该不一样，把它们放一群里比，每个标题都会被报成偏离。
+    实测一份格式正确的四文档材料，混算报出 478 条，分组后只剩 2 条。
+
+    主流值也按**文件**分别算：不同文件可以有不同的排版风格，
+    拿 A 文件的正文主流值去要求 B 文件的正文，是把「风格差异」报成「不一致」。
+
+    **未显式设置（None）怎么处理**：
+    None 的含义是「这一段没写这一项，继承样式里的值」，不是「这一项的值是空」。
+    拿它跟别的段落比，比的是看不见的差异——读者按报告去改，改不出任何变化。
+    所以分两种情况：
+
+    - 多数段落未显式设置（None 占多数）：那些显式设置了值的段落是「单独设了」。
+      这一条要报——渲染结果确实可能不同，而且改法明确（删掉单独设置，或推广到全文）。
+    - 多数段落显式设置了值：只在**显式设置了值**的段落之间比主流值。
+      没设置的段落不参与，因为它们的实际取值无从观测。
+    """
     issues = []
-    for key in keys:
-        counter: Counter = Counter()
-        total = 0
-        for _, _, style in _iter_paragraph_blocks(documents):
-            total += 1
-            counter[style.get(key)] += 1
-        if total < 3:
+    for (fname, role), items in sorted(_role_groups(documents).items()):
+        if len(items) < 3:
             continue
-        main_value, main_count = counter.most_common(1)[0]
-        if main_count / total < min_ratio:
+        # 列表项再按缩进层级分组：列表的缩进是层级决定的，
+        # 一级列表项缩进 21pt、二级缩进 45pt 是正常的，
+        # 把不同层级的列表项放一群里比缩进，报出来的全是假偏离。
+        # 每一层单独成一组，各层与各自的主流值比。
+        if role == ROLE_LIST_ITEM:
+            for indent, group in _group_by(items, "indent_left_pt").items():
+                issues += _deviations_in_group(
+                    group, keys, category, severity, min_ratio, role)
             continue
-        for doc, block, style in _iter_paragraph_blocks(documents):
-            actual = style.get(key)
-            if actual == main_value:
+        issues += _deviations_in_group(
+            items, keys, category, severity, min_ratio, role)
+    return issues
+
+
+def _group_by(items, key):
+    """按样式字段分组。"""
+    groups: dict = {}
+    for item in items:
+        groups.setdefault(item[2].get(key), []).append(item)
+    return groups
+
+
+def _deviations_in_group(items, keys, category, severity, min_ratio, role):
+    """一组同类段落内部，比出偏离主流值的那些。"""
+    issues = []
+    if len(items) >= 3:
+        for key in keys:
+            label = _FIELD_LABELS.get(key, key)
+            role_name = role_label(role)
+            total = len(items)
+            unset = sum(1 for _, _, s in items if not is_comparable(s, key))
+            explicit = [(d, b, s) for d, b, s in items if is_comparable(s, key)]
+
+            if unset / total >= min_ratio:
+                # 多数段落未显式设置：显式设置的那几段是「单独设了」。
+                if not explicit:
+                    continue
+                for doc, block, style in explicit:
+                    issues.append(make_finding(
+                        severity=severity,
+                        category=category,
+                        detector="deterministic",
+                        confidence="确定",
+                        file=doc["file"],
+                        locator={
+                            "type": "paragraph",
+                            "index": block["index"],
+                            "section_path": block.get("section_path", ""),
+                            "field": key,
+                            "role": role,
+                        },
+                        quote=block.get("text", "")[:60],
+                        description=(
+                            f"{label}在「{role_name}」中多数段落未显式设置"
+                            f"（{unset}/{total} 段），"
+                            f"此处单独设为「{_fmt(style.get(key))}」。"
+                        ),
+                        suggestion="删除此处的单独设置，或将其推广到全文。",
+                    ))
                 continue
-            if main_value is None:
-                # 主流值是「未设置」时，说「主流值为未设置」没有可操作性：
-                # 多数段落本来就没写这一项，该改的是这一段。
-                description = (
-                    f"{_FIELD_LABELS.get(key, key)}多数段落未显式设置"
-                    f"（{main_count}/{total} 段），此处单独设为「{_fmt(actual)}」。"
-                )
-                suggestion = "删除此处的单独设置，或将其推广到全文。"
-            else:
-                description = (
-                    f"{_FIELD_LABELS.get(key, key)}与全文主流值不一致："
-                    f"本处为「{_fmt(actual)}」，主流值为「{_fmt(main_value)}」"
-                    f"（{main_count}/{total} 段）。"
-                )
-                suggestion = f"统一改为「{_fmt(main_value)}」。"
-            issues.append(make_finding(
-                severity=severity,
-                category=category,
-                detector="deterministic",
-                confidence="确定",
-                file=doc["file"],
-                locator={
-                    "type": "paragraph",
-                    "index": block["index"],
-                    "section_path": block.get("section_path", ""),
-                    "field": key,
-                },
-                quote=block.get("text", "")[:60],
-                description=description,
-                suggestion=suggestion,
-            ))
+
+            if len(explicit) < 3:
+                continue
+            counter: Counter = Counter(str(s.get(key)) for _, _, s in explicit)
+            main_value, main_count = counter.most_common(1)[0]
+            if main_count / len(explicit) < min_ratio:
+                continue
+            for doc, block, style in explicit:
+                if str(style.get(key)) == main_value:
+                    continue
+                issues.append(make_finding(
+                    severity=severity,
+                    category=category,
+                    detector="deterministic",
+                    confidence="确定",
+                    file=doc["file"],
+                    locator={
+                        "type": "paragraph",
+                        "index": block["index"],
+                        "section_path": block.get("section_path", ""),
+                        "field": key,
+                        "role": role,
+                    },
+                    quote=block.get("text", "")[:60],
+                    description=(
+                        f"{label}与「{role_name}」的主流值不一致："
+                        f"本处为「{_fmt(style.get(key))}」，"
+                        f"主流值为「{_fmt(main_value)}」"
+                        f"（{main_count}/{len(explicit)} 段）。"
+                    ),
+                    suggestion=f"统一改为「{_fmt(main_value)}」。",
+                ))
     return issues
 
 
@@ -795,15 +884,32 @@ def analyze(documents: list[dict]) -> dict:
 
     issues.sort(key=_issue_sort_key)
 
+    # 样式主流值按角色分组给出。
+    #
+    # 混算一个「全文主流值」在报告里是误导性的：标题与正文本就不同，
+    # 混算出来的那个数既不是标题的写法也不是正文的写法，
+    # 读者拿它当标准去改，改出来的东西两头都不对。
     profile = {}
-    for key in _FONT_KEYS + _PARA_KEYS:
-        value, count, total = dominant(documents, key)
-        profile[key] = {
-            "label": _FIELD_LABELS.get(key, key),
-            "dominant": value,
-            "count": count,
-            "total": total,
-        }
+    for (fname, role), items in sorted(_role_groups(documents).items()):
+        entry = profile.setdefault(role, {"files": {}})
+        file_entry = entry["files"].setdefault(fname, {})
+        for key in _FONT_KEYS + _PARA_KEYS:
+            counter: Counter = Counter()
+            total = 0
+            for _, _, style in items:
+                if not is_comparable(style, key):
+                    continue
+                total += 1
+                counter[style.get(key)] += 1
+            if total < 3:
+                continue
+            value, count = counter.most_common(1)[0]
+            file_entry[key] = {
+                "label": _FIELD_LABELS.get(key, key),
+                "dominant": value,
+                "count": count,
+                "total": total,
+            }
 
     return {
         "style_profile": profile,

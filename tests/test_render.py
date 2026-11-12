@@ -6,7 +6,10 @@ from render import build_html, render
 def _consistency():
     return {
         "style_profile": {
-            "font_ea": {"label": "中文字体", "dominant": "宋体", "count": 40, "total": 42},
+            "正文": {"files": {"a.docx": {
+                "font_ea": {"label": "中文字体", "dominant": "宋体",
+                            "count": 40, "total": 42},
+            }}},
         },
         "issues": [
             {
@@ -306,7 +309,8 @@ def test_render_tolerates_null_baseline_fields(tmp_path):
     work = _write_work(tmp_path, findings=_findings())
     baseline = tmp_path / "prev.json"
     baseline.write_text(
-        json.dumps({"generated_at": "", "findings": None, "issues": None,
+        json.dumps({"format_version": 3, "generated_at": "",
+                    "findings": None, "issues": None,
                     "manifest": None}, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -317,6 +321,27 @@ def test_render_tolerates_null_baseline_fields(tmp_path):
     assert "复查对比" in html
     # 基线为空，两层的全部问题都算新增：模型侧 1 条 + 确定性层 1 条
     assert "新增问题（2）" in html
+
+
+def test_render_treats_versionless_baseline_as_old_format(tmp_path):
+    """没有格式标记的基线是旧格式，只能比语义层。
+
+    确定性层的口径改过（样式主流值从「全文混算」改成「按角色分组」），
+    旧基线里的样式问题与今天的结论不是一回事，拿来对比会说出一堆假的
+    「新增」与「已修复」。
+    """
+    work = _write_work(tmp_path, findings=_findings())
+    baseline = tmp_path / "prev.json"
+    baseline.write_text(
+        json.dumps({"generated_at": "", "findings": None, "issues": None,
+                    "manifest": None}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    out = tmp_path / "report.html"
+    render(work, out, baseline=baseline)
+    html = out.read_text(encoding="utf-8")
+    assert "基线来自旧版本格式" in html
+    assert "新增问题（1）" in html
 
 
 def test_render_tolerates_null_consistency_issues(tmp_path):

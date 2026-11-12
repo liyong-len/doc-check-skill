@@ -39,12 +39,45 @@ def _run_style(run) -> dict:
     }
 
 
+def _style_chain(style):
+    """样式继承链：段落自己的样式 → 它的基样式 → …
+
+    文档里绝大多数段落不直接写格式，格式来自样式（Normal、Body Text Indent…）。
+    只看直接格式，等于把「继承来的」当成「没设置」——
+    而这两种在渲染结果上可能完全一样。
+    """
+    chain = []
+    current = style
+    while current is not None:
+        chain.append(current)
+        current = getattr(current, "base_style", None)
+    return chain
+
+
+def _inherited(paragraph, attr: str):
+    """沿样式继承链找第一个有值的属性。"""
+    for style in _style_chain(paragraph.style):
+        value = getattr(style.paragraph_format, attr)
+        if value is not None:
+            return value
+    return None
+
+
 def _paragraph_style(paragraph, doc) -> dict:
     pf = paragraph.paragraph_format
-    align = pf.alignment
+    # 直接格式优先，没有就沿样式继承链找。
+    #
+    # 段落格式几乎都写在样式里（Normal 设 jc=both，Body Text Indent 设缩进），
+    # 段落自己往往一个字都不写。只看直接格式的话，继承来的值会被当成
+    # 「没设置」，而「没设置」与「显式设成同一个值」在渲染结果上完全一样——
+    # 实测一份真实投标材料，202 个段落被判成「对齐方式未显式设置」，
+    # 另有 40 个段落显式写了 both，两边其实渲染一致，却被报成 40 处「不一致」。
+    align = pf.alignment if pf.alignment is not None else _inherited(paragraph, "alignment")
     # 用 xml_value（"both"/"center"/"left"…），与数据契约的 align 取值一致。
     align_val = None if align is None else getattr(align, "xml_value", None)
     ls = pf.line_spacing
+    if ls is None:
+        ls = _inherited(paragraph, "line_spacing")
     # line_spacing 可能是倍数（float）或绝对值（Length，后者是 int 子类，
     # 必须先判 Length，否则绝对行距会被误当作倍数）。
     if ls is None:
@@ -54,6 +87,13 @@ def _paragraph_style(paragraph, doc) -> dict:
     else:
         line_spacing = ls
     sb, sa = pf.space_before, pf.space_after
+    if sb is None:
+        sb = _inherited(paragraph, "space_before")
+    if sa is None:
+        sa = _inherited(paragraph, "space_after")
+    left_indent = pf.left_indent if pf.left_indent is not None else _inherited(paragraph, "left_indent")
+    first_indent = (pf.first_line_indent if pf.first_line_indent is not None
+                    else _inherited(paragraph, "first_line_indent"))
     style_name = paragraph.style.name if paragraph.style is not None else None
     level = _heading_level(style_name)
 
@@ -79,8 +119,8 @@ def _paragraph_style(paragraph, doc) -> dict:
         "bold": rs["bold"],
         "italic": rs["italic"],
         "align": align_val,
-        "indent_left_pt": pf.left_indent.pt if pf.left_indent is not None else 0.0,
-        "indent_first_pt": pf.first_line_indent.pt if pf.first_line_indent is not None else 0.0,
+        "indent_left_pt": left_indent.pt if left_indent is not None else 0.0,
+        "indent_first_pt": first_indent.pt if first_indent is not None else 0.0,
         "line_spacing": line_spacing,
         "space_before_pt": sb.pt if sb is not None else 0.0,
         "space_after_pt": sa.pt if sa is not None else 0.0,

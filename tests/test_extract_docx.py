@@ -78,3 +78,74 @@ def test_extract_docx_exact_line_spacing_is_ratio(tmp_path):
     doc = extract_docx(path)
     para = next(b for b in doc["blocks"] if b.get("text") == "固定行距段落。")
     assert para["style"]["line_spacing"] == 1.5
+
+
+# --- 样式继承 ---
+
+def test_extract_docx_resolves_alignment_from_style(tmp_path):
+    """段落没直接写对齐方式时，取样式里的值。
+
+    Normal 样式通常设了两端对齐。段落不写 = 继承 = 两端对齐，
+    与另一段显式写「两端对齐」渲染结果完全一样。
+    只看直接格式会把继承来的值当成「没设置」，
+    于是「显式写了 both」被报成「单独设了 both」——看不见的差异。
+    """
+    d = docx.Document()
+    normal = d.styles["Normal"]
+    normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    inherited = d.add_paragraph("继承对齐方式的段落。")
+    explicit = d.add_paragraph("显式写了两端对齐的段落。")
+    explicit.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    path = tmp_path / "inherit_align.docx"
+    d.save(str(path))
+
+    doc = extract_docx(path)
+    a = next(b for b in doc["blocks"] if b.get("text") == "继承对齐方式的段落。")
+    b = next(b for b in doc["blocks"] if b.get("text") == "显式写了两端对齐的段落。")
+    assert a["style"]["align"] == "both", a["style"]["align"]
+    assert b["style"]["align"] == "both", b["style"]["align"]
+
+
+def test_extract_docx_resolves_indent_from_style(tmp_path):
+    """段落没直接写缩进时，取样式链上的值。"""
+    d = docx.Document()
+    normal = d.styles["Normal"]
+    normal.paragraph_format.left_indent = Pt(21)
+    normal.paragraph_format.first_line_indent = Pt(12)
+    d.add_paragraph("继承缩进的段落。")
+    path = tmp_path / "inherit_indent.docx"
+    d.save(str(path))
+
+    doc = extract_docx(path)
+    para = next(b for b in doc["blocks"] if b.get("text") == "继承缩进的段落。")
+    assert para["style"]["indent_left_pt"] == 21.0, para["style"]["indent_left_pt"]
+    assert para["style"]["indent_first_pt"] == 12.0, para["style"]["indent_first_pt"]
+
+
+def test_extract_docx_direct_format_wins_over_style(tmp_path):
+    """段落自己写的格式优先于样式里的。"""
+    d = docx.Document()
+    normal = d.styles["Normal"]
+    normal.paragraph_format.left_indent = Pt(21)
+    p = d.add_paragraph("自己写了左缩进的段落。")
+    p.paragraph_format.left_indent = Pt(45)
+    path = tmp_path / "direct_indent.docx"
+    d.save(str(path))
+
+    doc = extract_docx(path)
+    para = next(b for b in doc["blocks"] if b.get("text") == "自己写了左缩进的段落。")
+    assert para["style"]["indent_left_pt"] == 45.0, para["style"]["indent_left_pt"]
+
+
+def test_extract_docx_resolves_line_spacing_from_style(tmp_path):
+    """段落没直接写行距时，取样式里的值。"""
+    d = docx.Document()
+    normal = d.styles["Normal"]
+    normal.paragraph_format.line_spacing = 1.5
+    d.add_paragraph("继承行距的段落。")
+    path = tmp_path / "inherit_spacing.docx"
+    d.save(str(path))
+
+    doc = extract_docx(path)
+    para = next(b for b in doc["blocks"] if b.get("text") == "继承行距的段落。")
+    assert para["style"]["line_spacing"] == 1.5, para["style"]["line_spacing"]
