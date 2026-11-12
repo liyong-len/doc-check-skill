@@ -717,8 +717,9 @@ def _section_block(sec_id: str, title: str, body: str, count: str = "",
     标题放在 <summary> 里，收起时也看得见——收起不能把「这一节里有什么」也藏掉，
     所以标题旁带上该节的条目数（count）。
 
-    open_by_default 为真时这一节默认展开：§1 结论概览是读者打开报告第一眼要看的东西
-    （问题总数、级别分布、类别分布），把它收起来等于让读者先点一下才知道报告里有什么。
+    open_by_default 为真时这一节默认展开：§0 检查范围与 §1 结论概览是读者打开报告
+    第一眼要看的东西（受检了哪些文件、问题总数与分布），
+    把它们收起来等于让读者先点两下才知道报告里有什么。
     """
     count_html = f"<span class='sec-count'>{esc(count)}</span>" if count else ""
     open_attr = " open" if open_by_default else ""
@@ -811,6 +812,7 @@ def build_html(data: dict) -> str:
             f"{len(manifest.get('documents', []))} 个文件"
             + (f"，{len(manifest.get('failures', []))} 个未能检查"
                if manifest.get("failures") else ""),
+            open_by_default=True,
         ),
         _section_block(
             "s1", "§1 结论概览", _section_1(consistency, findings, counts),

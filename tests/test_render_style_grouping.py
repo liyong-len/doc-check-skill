@@ -245,10 +245,10 @@ def test_every_section_is_a_collapsible_block():
 
 
 def test_sections_are_collapsed_by_default_except_overview():
-    """默认收起，但 §1 结论概览例外——它是读者打开报告第一眼要看的东西。
+    """默认收起，但 §0 与 §1 结论概览例外——它们是读者打开报告第一眼要看的东西。
 
-    问题总数、级别分布、类别分布都在这一节；把它收起来，
-    读者得先点一下才知道报告里有多少问题。
+    §0 说了受检了哪些文件、有没有没能检查的；§1 说了问题总数与分布。
+    把它们收起来，读者得先点两下才知道报告里有什么。
     """
     import re
     html = _html(findings=[_semantic_finding()])
@@ -256,8 +256,8 @@ def test_sections_are_collapsed_by_default_except_overview():
         r"<details class='sec' id='sec-(s\d)'([^>]*)>", html))
     assert set(blocks) >= {"s0", "s1", "s2", "s3", "s4", "s5", "s7"}
     for sec, attrs in blocks.items():
-        if sec == "s1":
-            assert "open" in attrs, "§1 结论概览应当默认展开"
+        if sec in ("s0", "s1"):
+            assert "open" in attrs, f"{sec} 应当默认展开"
         else:
             assert "open" not in attrs, f"{sec} 应当默认收起"
 
