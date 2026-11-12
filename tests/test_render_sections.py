@@ -245,7 +245,8 @@ def test_section4_2_headers_match_content():
     assert "<th>角色</th>" in header
     assert "<th>说明</th>" in header
     assert "<th>处数</th>" in header
-    assert "<th>位置</th>" in header
+    # 位置并进了说明列，不再单独占一列。
+    assert "<th>位置</th>" not in header
     assert "<th>原文摘录</th>" not in header
     assert "<th>实际情况</th>" not in header
     assert "<th>主流值</th>" not in header

@@ -311,7 +311,8 @@ def test_report_distinguishes_same_basename_files_by_path():
     section = html.split("id='s3'")[1].split("id='s4'")[0]
     assert "甲文件的问题" in section
     assert "乙文件的问题" in section
-    assert section.count("<details") == 2
+    # 每个文件一个折叠块（文件级用 <details open>；§3 自己那层是 class='sec'）。
+    assert section.count("<details open>") == 2
 
 
 def test_section0_lists_relative_paths():

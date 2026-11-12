@@ -56,10 +56,61 @@ details { margin: 8px 0; }
 summary { cursor: pointer; font-weight: 600; }
 .muted { color: var(--muted); }
 .limit { border: 1px dashed var(--p1); padding: 12px 16px; border-radius: 4px; background: #fffaf0; }
+
+/* 章节折叠。
+   每一节默认收起，标题旁有一个可点的折叠标记。
+   报告要能一眼看完概况，也要能逐节展开细看——全展开的报告太长，
+   收起的报告又看不出每节里有什么，所以标题上带一个该节的摘要（问题数）。 */
+.sec { margin: 18px 0; border: 1px solid var(--line); border-radius: 6px; }
+.sec > summary {
+  display: flex; align-items: baseline; gap: 8px; list-style: none;
+  padding: 10px 14px; background: var(--soft); border-radius: 5px;
+  cursor: pointer;
+}
+.sec > summary::-webkit-details-marker { display: none; }
+.sec > summary::marker { content: ""; }
+/* 折叠标记：一个会转的小三角。用 CSS 画，不引图标字体。 */
+.sec > summary .fold {
+  flex: none; width: 0; height: 0; align-self: center;
+  border-left: 6px solid var(--muted);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform .12s ease;
+}
+.sec[open] > summary .fold { transform: rotate(90deg); }
+.sec[open] > summary { border-radius: 5px 5px 0 0; border-bottom: 1px solid var(--line); }
+/* h2 现在在 summary 里：它仍是文档的章节标题（目录锚点指向它），
+   但视觉上要和整行标题齐平，所以去掉它自己的块级边距。 */
+.sec > summary h2 {
+  margin: 0; padding: 0; border: 0; font-size: 17px; display: inline;
+}
+.sec > summary .sec-count { color: var(--muted); font-size: 13px; font-weight: 400; }
+.sec-body { padding: 4px 14px 12px; }
+
+/* 样式偏离表：位置清单从独立一列挪到说明列下方，用底色标出来。
+   位置是一串段序，单独占一列会把表撑得很宽，且与说明割裂。 */
+.tbl-style { table-layout: fixed; }
+.tbl-style th:nth-child(1), .tbl-style td:nth-child(1) { width: 24%; }
+.tbl-style th:nth-child(2), .tbl-style td:nth-child(2) { width: 11%; }
+.tbl-style th:nth-child(3), .tbl-style td:nth-child(3) { width: 10%; }
+.tbl-style th:nth-child(4), .tbl-style td:nth-child(4) { width: 6%; }
+.tbl-style th:nth-child(5), .tbl-style td:nth-child(5) { width: 49%; }
+.tbl-style td { vertical-align: top; }
+.loc-desc { margin-bottom: 4px; }
+.loc-list {
+  margin-top: 4px; padding: 6px 9px; border-radius: 3px;
+  background: #eef4fb; border-left: 3px solid #9dbfe4;
+  font-size: 12px; color: #24456b; word-break: break-all; line-height: 1.5;
+}
+.loc-list b { color: #16375c; }
+.loc-fix { margin-top: 4px; font-size: 12px; color: #166534; }
 @media print {
   body { padding: 0; font-size: 11px; }
   nav.toc { display: none; }
   .issue { break-inside: avoid; }
   h2 { break-after: avoid; }
+  /* 打印时全部展开：纸上要看到全部内容（展开由脚本在 beforeprint 里做）。 */
+  .sec > summary .fold { display: none; }
+  .sec { border: 0; }
+  .sec > summary { background: none; padding-left: 0; }
 }
 """

@@ -31,12 +31,12 @@ def _manifest():
 
 
 def _style_issue(index, field="font_ea", role="正文", value="仿宋",
-                  file="a.docx"):
+                  file="a.docx", section=""):
     return {
         "id": "i" * 16, "severity": "P2", "category": "字体一致性",
         "detector": "deterministic", "confidence": "确定", "file": file,
         "locator": {"type": "paragraph", "index": index,
-                    "section_path": "", "field": field, "role": role},
+                    "section_path": section, "field": field, "role": role},
         "quote": f"第 {index} 段摘录",
         "description": f"中文字体与「{role}」的主流值不一致：本处为「{value}」，主流值为「宋体」（40/42 段）。",
         "suggestion": "统一改为「宋体」。",
@@ -129,14 +129,27 @@ def test_section4_2_separates_different_roles():
 
 
 def test_section4_2_shows_count_and_locations():
-    """聚合行要给出处数与位置，读者据此去改。"""
+    """聚合行要给出处数与位置，读者据此去改。
+
+    位置并进说明列的下半部分（带底色），不再单独占一列。
+    """
     issues = [_style_issue(i) for i in range(3)]
     html = _html(issues=issues)
     s42 = _section(html, "4.2 样式偏离明细", "<h3>4.3")
     assert "<th>处数</th>" in s42
-    assert "<th>位置</th>" in s42
+    # 位置不再是一列，而是说明单元格里的一段。
+    assert "<th>位置</th>" not in s42
+    assert "loc-list" in s42
     assert "段序 0" in s42
     assert "段序 2" in s42
+
+
+def test_section4_2_locations_are_highlighted():
+    """位置清单用底色标出来，与说明文字区分开。"""
+    html = _html(issues=[_style_issue(1)])
+    s42 = _section(html, "4.2 样式偏离明细", "<h3>4.3")
+    assert "<div class='loc-list'>" in s42
+    assert "loc-desc" in s42
 
 
 def test_section4_2_lists_paragraph_indexes():
@@ -217,3 +230,89 @@ def test_section4_1_only_lists_roles_with_deviations():
     assert "正文" in s41
     assert "小标题" not in s41
 
+
+
+# --- 章节折叠 ---
+
+def test_every_section_is_a_collapsible_block():
+    """每一节都是可折叠的块，默认收起。
+
+    报告太长，收起后能一眼看完概况，再逐节展开细看。
+    """
+    html = _html(findings=[_semantic_finding()])
+    for sec in ("s0", "s1", "s2", "s3", "s4", "s5", "s7"):
+        assert f"class='sec' id='sec-{sec}'" in html, sec
+
+
+def test_sections_are_collapsed_by_default_except_overview():
+    """默认收起，但 §1 结论概览例外——它是读者打开报告第一眼要看的东西。
+
+    问题总数、级别分布、类别分布都在这一节；把它收起来，
+    读者得先点一下才知道报告里有多少问题。
+    """
+    import re
+    html = _html(findings=[_semantic_finding()])
+    blocks = dict(re.findall(
+        r"<details class='sec' id='sec-(s\d)'([^>]*)>", html))
+    assert set(blocks) >= {"s0", "s1", "s2", "s3", "s4", "s5", "s7"}
+    for sec, attrs in blocks.items():
+        if sec == "s1":
+            assert "open" in attrs, "§1 结论概览应当默认展开"
+        else:
+            assert "open" not in attrs, f"{sec} 应当默认收起"
+
+
+def test_section_titles_stay_visible_when_collapsed():
+    """收起时标题与该节的条目数仍要看得见。
+
+    收起不能把「这一节里有什么」也藏掉——不然读者只剩一排标题。
+    """
+    html = _html(findings=[_semantic_finding()])
+    s3 = _section(html, "id='s3'", "id='s4'")
+    assert "§3 按文件明细" in s3
+    assert "sec-count" in s3
+
+
+def test_section_has_fold_marker():
+    """标题旁有一个折叠标记。"""
+    html = _html(findings=[_semantic_finding()])
+    assert "class='fold'" in html
+
+
+def test_report_expands_all_sections_when_printing():
+    """打印时全部展开：纸上要看到全部内容。
+
+    收起的小节在打印时是空的，脚本在 beforeprint 里展开。
+    """
+    html = _html(findings=[_semantic_finding()])
+    assert "beforeprint" in html
+    assert "afterprint" in html
+
+
+def test_report_opens_section_targeted_by_anchor():
+    """从目录点进来要展开对应的小节。
+
+    链接指向的是收起状态的标题，不展开的话读者点完看到一片空白。
+    """
+    html = _html(findings=[_semantic_finding()])
+    assert "hashchange" in html
+    assert "openTarget" in html
+
+
+def test_section4_2_groups_locations_by_section():
+    """同一章的段序归到一起，章名只写一次。
+
+    逐条写成「第三部分 / 段序 62、第三部分 / 段序 52、…」时章名重复几十遍，
+    位置反而看不清。
+    """
+    issues = [
+        _style_issue(3, section="第一章"),
+        _style_issue(5, section="第一章"),
+        _style_issue(9, section="第二章"),
+    ]
+    html = _html(issues=issues)
+    s42 = _section(html, "4.2 样式偏离明细", "<h3>4.3")
+    # 段序按章归组，章名各出现一次。
+    assert "第一章：段序 3、段序 5" in s42, s42
+    assert "第二章：段序 9" in s42, s42
+    assert s42.count("第一章") == 1, s42

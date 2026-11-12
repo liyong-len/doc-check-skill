@@ -135,15 +135,20 @@ def _issue_card(f: dict) -> str:
     )
 
 
-def _table(headers: list[str], rows: list[list[str]]) -> str:
-    """渲染表格。rows 的每个单元格按已转义的 HTML 处理，调用方需自行 esc()。"""
+def _table(headers: list[str], rows: list[list[str]], cls: str = "") -> str:
+    """渲染表格。rows 的每个单元格按已转义的 HTML 处理，调用方需自行 esc()。
+
+    cls 给表格加一个类名，用来定列宽（见 .tbl-style）。
+    """
     if not rows:
         return '<p class="muted">无</p>'
     th = "".join(f"<th>{esc(h)}</th>" for h in headers)
     trs = []
     for r in rows:
         trs.append("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>")
-    return f"<table><thead><tr>{th}</tr></thead><tbody>{''.join(trs)}</tbody></table>"
+    attr = f" class='{esc(cls)}'" if cls else ""
+    return (f"<table{attr}><thead><tr>{th}</tr></thead>"
+            f"<tbody>{''.join(trs)}</tbody></table>")
 
 
 def _count_severity(issues: list[dict]) -> dict[str, int]:
@@ -191,7 +196,7 @@ def _section_0(manifest: dict) -> str:
             esc("、".join(d.get("entities", [])) or "未识别"),
             esc(d.get("sha256", "")[:12]),
         ])
-    out = [f"<h2 id='s0'>§0 检查范围与未能检查项</h2>"]
+    out = []
     out.append(_table(
         ["文件", "类型", "页数", "字数", "段落", "表格", "推断出的主体名", "SHA256 前缀"],
         rows,
@@ -237,7 +242,7 @@ def _section_1(consistency, findings, counts) -> str:
     mixed_file = sum(1 for f in all_issues if f.get("category") == "主体串写")
     mixed_para = sum(1 for f in all_issues if f.get("category") == "主体名误用")
 
-    out = [f"<h2 id='s1'>§1 结论概览</h2>"]
+    out = []
     out.append('<div class="counts">')
     for s in SEVERITY_ORDER:
         out.append(f"<div><span class='badge {s}'>{s}</span><b>{counts[s]}</b></div>")
@@ -262,7 +267,7 @@ def _section_2(consistency, findings) -> str:
     hard = [f for f in _issue_list(consistency, "issues") + list(findings)
             if _severity(f) in ("P0", "P1")]
     hard.sort(key=lambda f: (_severity(f), f.get("file", "")))
-    out = ["<h2 id='s2'>§2 硬伤速览（P0 / P1）</h2>"]
+    out = []
     if not hard:
         out.append("<p>未发现 P0 或 P1 级问题。</p>")
         return "".join(out)
@@ -300,7 +305,7 @@ def _section_3(consistency, findings, manifest) -> str:
         if f.get("category") in _STYLE_CATEGORIES:
             fname = f.get("file", "")
             style_counts[fname] = style_counts.get(fname, 0) + 1
-    out = ["<h2 id='s3'>§3 按文件明细</h2>"]
+    out = []
     if not by_file and not style_counts:
         out.append("<p>未发现问题。</p>")
         return "".join(out)
@@ -395,6 +400,10 @@ def _aggregate_style_issues(style_issues: list[dict]) -> list[list[str]]:
     同一个 (文件, 角色, 项目, 实际取值) 的偏离合成一行，
     给出处数与位置列表。几百条偏离通常只有十几种组合，
     逐条铺开会让读者看不出「到底有几件事要改」。
+
+    **位置不单独占一列**，并到说明列的下半部分，用底色标出来。
+    位置是一串段序，单独一列会把表撑得很宽，而且与它所属的那条问题割裂；
+    并到说明下方，读者一眼能看到「这条问题出在哪几处」。
     """
     buckets: dict[tuple, dict] = {}
     for i in style_issues:
@@ -416,19 +425,51 @@ def _aggregate_style_issues(style_issues: list[dict]) -> list[list[str]]:
             "suggestion": i.get("suggestion", ""),
             "locations": [],
         })
-        entry["locations"].append(_locator_text(loc))
+        # 记下章节路径与段序分开的东西：同一章里的多段不必把章名重复一遍。
+        section = loc.get("section_path", "") or ""
+        idx = loc.get("index")
+        entry["locations"].append((section, idx))
     rows = []
     for key in sorted(buckets, key=lambda k: (k[0], role_sort_key(k[1]), k[2], k[3])):
         e = buckets[key]
+        # 说明在上，位置在下（底色标出），建议再跟一行。
+        description = esc(e["description"])
+        locations = esc(_format_locations(e["locations"]))
+        cell = (
+            f"<div class='loc-desc'>{description}</div>"
+            f"<div class='loc-list'><b>位置</b>：{locations}</div>"
+        )
+        if e["suggestion"]:
+            cell += f"<div class='loc-fix'>建议：{esc(e['suggestion'])}</div>"
         rows.append([
             esc(_file_label(e["file"])),
             esc(role_label(e["role"])),
             esc(_field_label(e["field"])),
-            esc(e["description"]),
             str(len(e["locations"])),
-            esc("、".join(e["locations"])),
+            cell,
         ])
     return rows
+
+
+def _format_locations(locations: list) -> str:
+    """位置清单：同一章的段序归到一起，章名只写一次。
+
+    逐条写成「第三部分 技术需求说明书 / 段序 62、第三部分 技术需求说明书 / 段序 52、…」
+    时章名重复几十遍，位置反而看不清。按章分组写成
+    「第三部分 技术需求说明书：段序 62、52、13；根据邀请文件要求提供技术方案：段序 89」。
+    """
+    by_section: dict[str, list[str]] = {}
+    order: list[str] = []
+    for section, idx in locations:
+        if section not in by_section:
+            by_section[section] = []
+            order.append(section)
+        by_section[section].append("段序 " + str(idx) if idx is not None else "位置未标注")
+    parts = []
+    for section in order:
+        label = section if section else "全文"
+        parts.append(f"{label}：{'、'.join(by_section[section])}")
+    return "；".join(parts)
 
 
 def _field_label(field: str) -> str:
@@ -436,7 +477,7 @@ def _field_label(field: str) -> str:
 
 
 def _section_4(consistency: dict) -> str:
-    out = ["<h2 id='s4'>§4 一致性差异</h2>"]
+    out = []
     profile = consistency.get("style_profile", {})
     issues = _issue_list(consistency, "issues")
 
@@ -466,9 +507,7 @@ def _section_4(consistency: dict) -> str:
             f"按「文件 + 角色 + 项目 + 实际情况」聚合为 {len(agg)} 组。</p>"
         )
         out.append(_table(
-            ["文件", "角色", "项目", "说明", "处数", "位置"],
-            agg,
-        ))
+            ["文件", "角色", "项目", "处数", "说明"], agg, cls="tbl-style"))
     else:
         out.append("<p class='muted'>未发现样式偏离。</p>")
 
@@ -522,7 +561,7 @@ def _section_5(findings: list[dict], depth: str = "",
     # 只筛模型侧会让 §5 印出「无。」而同一个 P0 在 §2/§3 里挂着。
     verify = [f for f in list(findings) + list(deterministic_issues or [])
               if f.get("confidence") == "疑似 · 需人工核实"]
-    out = ["<h2 id='s5'>§5 待补充与待核实</h2>"]
+    out = []
     out.append("<h3>待补充内容</h3>")
     if todo:
         out.append(_table(
@@ -566,7 +605,7 @@ def _section_6(baseline_diff: dict) -> str:
     if not baseline_diff:
         return ""
     fd = baseline_diff.get("findings", {})
-    out = ["<h2 id='s6'>§6 复查对比</h2>"]
+    out = []
     if baseline_diff.get("baseline_old_format"):
         # 旧格式的基线里没有确定性层的问题，它与今天的确定性层无从对比。
         # 把今天跑出来的确定性问题说成「新增」是在这一章里说假话，
@@ -649,7 +688,7 @@ _DEPTH_COVERAGE = {
 
 
 def _section_7(manifest: dict) -> str:
-    out = ["<h2 id='s7'>§7 附录</h2>"]
+    out = []
     depth = manifest.get("depth", "")
     out.append("<h3>本次检查范围</h3>")
     out.append(_table(
@@ -671,6 +710,69 @@ def _section_7(manifest: dict) -> str:
     return "".join(out)
 
 
+def _section_block(sec_id: str, title: str, body: str, count: str = "",
+                   open_by_default: bool = False) -> str:
+    """把一节包成可折叠的块，默认收起。
+
+    标题放在 <summary> 里，收起时也看得见——收起不能把「这一节里有什么」也藏掉，
+    所以标题旁带上该节的条目数（count）。
+
+    open_by_default 为真时这一节默认展开：§1 结论概览是读者打开报告第一眼要看的东西
+    （问题总数、级别分布、类别分布），把它收起来等于让读者先点一下才知道报告里有什么。
+    """
+    count_html = f"<span class='sec-count'>{esc(count)}</span>" if count else ""
+    open_attr = " open" if open_by_default else ""
+    return (
+        f"<details class='sec' id='sec-{sec_id}'{open_attr}>"
+        f"<summary><span class='fold' aria-hidden='true'></span>"
+        f"<h2 id='{sec_id}'>{esc(title)}</h2>{count_html}</summary>"
+        f"<div class='sec-body'>{body}</div>"
+        "</details>"
+    )
+
+
+# 打印与锚点的行为。
+#
+# 折叠起来的小节在打印时是空的——纸上要看到全部内容，
+# 所以打印前把所有小节展开、打印完**恢复原状**（§1 默认是展开的，
+# 全部收起会把它的默认状态改掉）。
+# 从目录点进来时也要展开对应的小节：链接指向的是收起状态的标题，
+# 不展开的话读者点完链接看到的是一片空白。
+_PRINT_JS = """
+<script>
+(function () {
+  var beforePrint = null;
+  window.addEventListener('beforeprint', function () {
+    var ds = document.querySelectorAll('details.sec');
+    beforePrint = [];
+    for (var i = 0; i < ds.length; i++) {
+      beforePrint.push(ds[i].open);
+      ds[i].open = true;
+    }
+  });
+  window.addEventListener('afterprint', function () {
+    if (!beforePrint) { return; }
+    var ds = document.querySelectorAll('details.sec');
+    for (var i = 0; i < ds.length && i < beforePrint.length; i++) {
+      ds[i].open = beforePrint[i];
+    }
+    beforePrint = null;
+  });
+  function openTarget() {
+    if (!window.location.hash) { return; }
+    var el = document.getElementById(window.location.hash.slice(1));
+    while (el) {
+      if (el.tagName === 'DETAILS') { el.open = true; }
+      el = el.parentElement;
+    }
+  }
+  window.addEventListener('hashchange', openTarget);
+  window.addEventListener('load', openTarget);
+})();
+</script>
+"""
+
+
 def build_html(data: dict) -> str:
     manifest = data.get("manifest", {})
     consistency = data.get("consistency", {})
@@ -679,6 +781,15 @@ def build_html(data: dict) -> str:
 
     counts = _count_severity(_issue_list(consistency, "issues") + list(findings))
     manifest = _manifest_with_entities(manifest, consistency)
+
+    det_issues = _issue_list(consistency, "issues")
+    all_issues = det_issues + list(findings)
+    style_issues = [i for i in det_issues if i.get("category") in _STYLE_CATEGORIES]
+    hard = [i for i in all_issues if _severity(i) in ("P0", "P1")]
+    todo = [i for i in findings if i.get("category") == "待补充内容"]
+    verify = [i for i in all_issues if i.get("confidence") == "疑似 · 需人工核实"]
+    conv = [i for i in det_issues if i.get("category") in _CONVENTION_CATEGORIES]
+    style_groups = len(_aggregate_style_issues(style_issues)) if style_issues else 0
 
     toc = [
         ("§0 检查范围", "s0"),
@@ -695,14 +806,39 @@ def build_html(data: dict) -> str:
     nav = "".join(f"<a href='#{i}'>{t}</a>" for t, i in toc)
 
     body = "".join([
-        _section_0(manifest),
-        _section_1(consistency, findings, counts),
-        _section_2(consistency, findings),
-        _section_3(consistency, findings, manifest),
-        _section_4(consistency),
-        _section_5(findings, manifest.get("depth", ""), _issue_list(consistency, "issues")),
-        _section_6(baseline_diff),
-        _section_7(manifest),
+        _section_block(
+            "s0", "§0 检查范围与未能检查项", _section_0(manifest),
+            f"{len(manifest.get('documents', []))} 个文件"
+            + (f"，{len(manifest.get('failures', []))} 个未能检查"
+               if manifest.get("failures") else ""),
+        ),
+        _section_block(
+            "s1", "§1 结论概览", _section_1(consistency, findings, counts),
+            f"{sum(counts.values())} 个问题", open_by_default=True,
+        ),
+        _section_block(
+            "s2", "§2 硬伤速览（P0 / P1）", _section_2(consistency, findings),
+            f"{len(hard)} 条",
+        ),
+        _section_block(
+            "s3", "§3 按文件明细", _section_3(consistency, findings, manifest),
+            f"{len(all_issues)} 个问题",
+        ),
+        _section_block(
+            "s4", "§4 一致性差异", _section_4(consistency),
+            (f"{len(style_issues)} 处样式偏离，聚合为 {style_groups} 组"
+             if style_issues else "")
+            + (f"，{len(conv)} 条体例差异" if conv else ""),
+        ),
+        _section_block(
+            "s5", "§5 待补充与待核实",
+            _section_5(findings, manifest.get("depth", ""), det_issues),
+            f"{len(todo)} 条待补充，{len(verify)} 条待核实",
+        ),
+        _section_block(
+            "s6", "§6 复查对比", _section_6(baseline_diff),
+        ) if baseline_diff else "",
+        _section_block("s7", "§7 附录", _section_7(manifest)),
     ])
 
     return (
@@ -722,6 +858,7 @@ def build_html(data: dict) -> str:
         f"<nav class='toc'>{nav}</nav>"
         f"{body}"
         f"<div class='limit'><b>能力边界</b><br>{esc(_LIMITATION)}</div>"
+        f"{_PRINT_JS}"
         "</div></body></html>"
     )
 
