@@ -41,6 +41,31 @@
 
 ## 安装
 
+### 一行装完
+
+不需要 clone 仓库。macOS / Linux / Windows 上的 Git Bash：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liyong-len/doc-check-skill/main/install/bootstrap.sh | bash
+```
+
+Windows（PowerShell 5.1 或 pwsh 7）：
+
+```powershell
+irm https://raw.githubusercontent.com/liyong-len/doc-check-skill/main/install/bootstrap.ps1 | iex
+```
+
+引导脚本做两件事：把仓库下载到 `~/.doc-check/repo`（Windows 是 `%USERPROFILE%\.doc-check\repo`），
+然后调用下面的安装器完成安装。**装完别删这个目录**——虚拟环境建在里面，
+技能目录的 `python-path.txt` 指向它。
+
+国内网络访问 GitHub 不稳时可能要多跑几次。也可以用
+`DOC_CHECK_REPO_URL` 指向自己的镜像。
+
+### 手动安装
+
+已经 clone 了仓库的话，直接跑安装器：
+
 Windows：
 
 ```powershell
@@ -182,7 +207,8 @@ SKILL.md            智能体主指令
 AGENTS.md           通用接入说明
 scripts/            抽取、统计、分片、渲染
 references/         语义规则、格式规则、严重级别与 schema、报告规范
-install/            安装器与智能体适配表（install_skill.py 是两个安装器共用的安装阶段）
+install/            安装器与智能体适配表（install_skill.py 是两个安装器共用的安装阶段，
+                    bootstrap.sh / bootstrap.ps1 是一行安装的引导脚本）
 tests/              单元测试、端到端测试、样本生成、金标评估
 ```
 
